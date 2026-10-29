@@ -486,6 +486,61 @@ function PrioritySlider({ value, onChange, disabled, inPanel, always }) {
     ${PORDER.map((p) => html`<span class=${'seg' + (cur === p ? ' on' + (p === 'P2' ? ' p2' : '') : '')}>${PRI[p]}</span>`)}
   </div>`;
 }
+const SORDER = ['open', 'blocked', 'done'];
+const SLABEL = { open: 'In progress', blocked: 'Blocked', done: 'Done' };
+const STHUMB = { open: 'var(--ink)', blocked: 'var(--late)', done: 'var(--done)' };
+function StatusSlider({ value, onChange }) {
+  const ref = useRef();
+  const [drag, setDrag] = useState(null);
+  const cur = drag ?? value;
+  const idx = SORDER.indexOf(cur);
+  const pick = (x) => { const r = ref.current.getBoundingClientRect(); return SORDER[Math.max(0, Math.min(2, Math.floor(((x - r.left) / r.width) * 3)))]; };
+  return html`<div ref=${ref} class="slider inpanel status" role="slider" tabindex="0" aria-label="Status" aria-valuemin="1" aria-valuemax="3" aria-valuenow=${idx + 1} aria-valuetext=${SLABEL[cur]}
+    onPointerDown=${(e) => { e.preventDefault(); ref.current.setPointerCapture?.(e.pointerId); setDrag(pick(e.clientX)); }}
+    onPointerMove=${(e) => drag !== null && setDrag(pick(e.clientX))}
+    onPointerUp=${() => { if (drag !== null) { onChange(drag); setDrag(null); } }}
+    onKeyDown=${(e) => { const i = SORDER.indexOf(value); if (e.key === 'ArrowRight') { e.preventDefault(); onChange(SORDER[Math.min(2, i + 1)]); } if (e.key === 'ArrowLeft') { e.preventDefault(); onChange(SORDER[Math.max(0, i - 1)]); } }}>
+    <span class="thumb" style=${`left:calc(${idx * 33.33}% + 2px);background:${STHUMB[cur]}`}></span>
+    ${SORDER.map((v) => html`<span class=${'seg' + (cur === v ? ' on' + (v === 'open' ? ' p2' : '') : '')}>${SLABEL[v]}</span>`)}
+  </div>`;
+}
+function QuickUpdate({ ctx, t, close }) {
+  const [status, setStatus] = useState(t.status);
+  const [text, setText] = useState('');
+  const [on, setOn] = useState(t.blocked_on_person_id || '');
+  const [busy, setBusy] = useState(false);
+  const inRef = useRef();
+  useEffect(() => { setTimeout(() => inRef.current?.focus(), 0); }, []);
+  async function post() {
+    const body = text.trim();
+    if (status === t.status && !body) return close();
+    if (status === 'blocked' && !body && t.status !== 'blocked') { inRef.current?.focus(); return ctx.setToast({ text: 'Say what it is waiting on' }); }
+    setBusy(true);
+    if (body) {
+      const { error } = await sb.from('task_updates').insert({ task_id: t.id, author_id: ctx.me.id, body });
+      if (error) { setBusy(false); return ctx.setToast({ text: error.message }); }
+      delete peekCache[t.id];
+    }
+    if (status !== t.status || (status === 'blocked' && (body || on !== (t.blocked_on_person_id || '')))) {
+      const fields = status === 'done' ? { status: 'done', completed_at: new Date().toISOString() }
+        : status === 'blocked' ? { status: 'blocked', blocked_reason: body || t.blocked_reason, blocked_on_person_id: on || null, completed_at: null }
+        : { status: 'open', completed_at: null };
+      await ctx.update(t.id, fields, null);
+    }
+    setBusy(false); close();
+    ctx.setToast({ text: status === 'done' ? 'Marked done' + (body ? ' with update' : '') : status === 'blocked' ? 'Marked blocked' : body ? 'Update posted' : 'Status changed' });
+    ctx.load();
+  }
+  const ph = status === 'blocked' ? 'What is it waiting on?' : status === 'done' ? 'Closing note (optional)' : 'What’s the latest? e.g. “Draft shared with Aviral, final by Fri”';
+  return html`<div class="qupd" onKeyDown=${(e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } }}>
+    <${StatusSlider} value=${status} onChange=${setStatus} />
+    <input ref=${inRef} class="field" aria-label="Update" placeholder=${ph} value=${text} onInput=${(e) => setText(e.target.value)} onKeyDown=${(e) => e.key === 'Enter' && !busy && post()} />
+    ${status === 'blocked' ? html`<select class="field on" aria-label="Waiting on" value=${on} onChange=${(e) => setOn(e.target.value)}><option value="">Waiting on…</option>${ctx.people.map((p) => html`<option value=${p.id} selected=${on === p.id}>${p.name}</option>`)}</select>` : ''}
+    <button class="btn primary" disabled=${busy} onClick=${post}>Post</button>
+    <button class="btn ghost" onClick=${close}>Esc</button>
+    ${t.last_update_body ? html`<span class="last">Last: “${t.last_update_body.slice(0, 80)}${t.last_update_body.length > 80 ? '…' : ''}” ${first(ctx.person(t.last_update_author)?.name)}, ${ago(t.last_update_at)}</span>` : ''}
+  </div>`;
+}
 function Prio({ ctx, t, onSaved }) {
   const [open, setOpen] = useState(false);
   const can = ctx.canEdit(t);
@@ -554,6 +609,7 @@ function Peek({ ctx, t }) {
 /* ---------- task row ---------- */
 function TRow({ ctx, t, sel, toggle, selecting, showList = true, showDept = false, dragIds }) {
   const [peek, setPeek] = useState(false);
+  const [qu, setQu] = useState(false);
   const timer = useRef();
   const can = ctx.canEdit(t);
   const tags = [];
@@ -566,7 +622,8 @@ function TRow({ ctx, t, sel, toggle, selecting, showList = true, showDept = fals
   if (t.from_department_id) tags.push(html`<span class="tag info">From ${ctx.dept(t.from_department_id)?.name}</span>`);
   if (t.is_private) tags.push(html`<span class="tag quiet">Private</span>`);
   const dragStart = (e) => { const ids = dragIds?.(t.id) || [t.id]; e.dataTransfer.setData('text/bs-task', ids.join(',')); e.dataTransfer.effectAllowed = 'move'; e.currentTarget.classList.add('dragging'); };
-  return html`<div class=${'trow' + (sel ? ' sel' : '') + (t.status === 'done' ? ' isdone' : '')} draggable=${can} onDragStart=${dragStart} onDragEnd=${(e) => e.currentTarget.classList.remove('dragging')}>
+  return html`<div class=${'trow' + (sel ? ' sel' : '') + (t.status === 'done' ? ' isdone' : '') + (qu ? ' open' : '')} draggable=${can && !qu} onDragStart=${dragStart} onDragEnd=${(e) => e.currentTarget.classList.remove('dragging')}
+    tabindex="-1" onKeyDown=${(e) => { if (e.key.toLowerCase() === 'u' && e.target === e.currentTarget && can) { e.preventDefault(); setQu(true); } }}>
     <span class="grip" aria-hidden="true" title="Drag to a list, a day or a department">⋮⋮</span>
     ${toggle ? html`<input type="checkbox" class="cbox" checked=${sel} onChange=${() => toggle(t.id)} aria-label=${'Select ' + t.title} />` : ''}
     <button class=${'ring' + (t.status === 'done' ? ' done' : t.status === 'blocked' ? ' blocked' : !t.priority ? ' none' : '')} disabled=${!can} aria-label=${(t.status === 'done' ? 'Reopen: ' : 'Mark done: ') + t.title} onClick=${() => (t.status === 'done' ? ctx.reopen(t) : ctx.done(t))}></button>
@@ -576,12 +633,13 @@ function TRow({ ctx, t, sel, toggle, selecting, showList = true, showDept = fals
       ${tags}
     </div>
     <div class="props">
-      <span class="updc" title=${t.last_update_body ? `Latest: ${t.last_update_body}` : 'No updates'}>${t.last_update_at ? html`${I.bubble}${ago(t.last_update_at).replace(' ago', '')}` : ''}</span>
+      <button class=${'updc' + (t.last_update_at ? ' has' : '')} disabled=${!can} title=${t.last_update_body ? `Latest: ${t.last_update_body}. Click to update` : 'Post an update or change status'} aria-label=${'Update ' + t.title} onClick=${() => setQu(!qu)}>${I.bubble}<span class="lab">${t.last_update_at ? ago(t.last_update_at).replace(' ago', '') : 'Update'}</span></button>
       <${Prio} ctx=${ctx} t=${t} />
       <${DateChip} ctx=${ctx} t=${t} />
       <${OwnerPick} ctx=${ctx} t=${t} />
     </div>
-    ${peek ? html`<${Peek} ctx=${ctx} t=${t} />` : ''}
+    ${peek && !qu ? html`<${Peek} ctx=${ctx} t=${t} />` : ''}
+    ${qu ? html`<${QuickUpdate} ctx=${ctx} t=${t} close=${() => setQu(false)} />` : ''}
   </div>`;
 }
 

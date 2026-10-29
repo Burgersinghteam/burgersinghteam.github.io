@@ -128,7 +128,17 @@ a { color: var(--link); }
 .tag.quiet { background: transparent; color: var(--faint); padding: 0; }
 @media (prefers-color-scheme: dark) { .tag.warn { background: #3A2A18; color: #E6B98F; } }
 .props { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
-.updc { display: inline-flex; align-items: center; gap: 4px; color: var(--faint); font-size: 12px; width: 36px; justify-content: flex-end; }
+.updc { display: inline-flex; align-items: center; gap: 4px; color: var(--faint); font-size: 12px; min-width: 40px; height: 26px; padding: 0 7px; justify-content: flex-end; border: none; background: transparent; border-radius: 7px; }
+.updc .lab { white-space: nowrap; }
+.updc:not(.has) { opacity: 0; }
+.trow:hover .updc, .updc:focus-visible, .trow.open .updc { opacity: 1; }
+.updc:hover:not(:disabled) { background: var(--chip); color: var(--ink); }
+.trow.open { background: var(--hover); flex-wrap: wrap; }
+.qupd { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 0 4px 41px; }
+.qupd .slider.status { width: 270px; flex-shrink: 0; }
+.qupd > input.field { flex: 1 1 260px; height: 34px; }
+.qupd .field.on { width: 170px; height: 34px; }
+.qupd .last { flex-basis: 100%; font-size: 12px; color: var(--faint); }
 .who-av { width: 24px; height: 24px; border-radius: 12px; font-size: 10.5px; font-weight: 600; display: grid; place-items: center; flex-shrink: 0; border: none; padding: 0; color: #17181B; }
 .who-av:disabled { cursor: default; }
 
@@ -256,6 +266,9 @@ textarea.field { height: auto; min-height: 70px; padding: 8px 10px; resize: vert
   .ghead .hint, .ghead .prog { display: none; }
   .trow { flex-wrap: wrap; padding: 10px 16px; gap: 8px 10px; }
   .grip, .cbox { display: none; }
+  .updc:not(.has) { opacity: 1; }
+  .qupd { padding-left: 0; }
+  .qupd .slider.status { width: 100%; }
   .tmain { flex: 1 1 calc(100% - 40px); flex-wrap: wrap; }
   .ttitle { white-space: normal; }
   .props { width: 100%; padding-left: 27px; justify-content: flex-start; }
