@@ -11,19 +11,21 @@ const istNow = () => new Date(Date.now() + 5.5 * 3600e3);
 const today = () => istNow().toISOString().slice(0, 10);
 const addDays = (d, n) => new Date(Date.parse(d) + n * 86400e3).toISOString().slice(0, 10);
 const diff = (a, b) => Math.round((Date.parse(b) - Date.parse(a)) / 86400e3);
-const dow = (d) => (new Date(Date.parse(d)).getUTCDay() + 6) % 7; // 0 = Monday
+const dow = (d) => (new Date(Date.parse(d)).getUTCDay() + 6) % 7;
 const weekStart = () => addDays(today(), -dow(today()));
 const weekEnd = () => addDays(weekStart(), 6);
 const nextDow = (target) => { const t = today(); let n = (target - dow(t) + 7) % 7; if (n === 0) n = 7; return addDays(t, n); };
 const fmtDate = (d) => new Date(Date.parse(d)).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
+const dayName = (d) => new Date(Date.parse(d)).toLocaleDateString('en-IN', { weekday: 'short', timeZone: 'UTC' });
+const dayNum = (d) => new Date(Date.parse(d)).getUTCDate();
 const shortDue = (d) => {
-  if (!d) return 'No date';
+  if (!d) return 'Add date';
   const n = diff(d, today());
   if (n > 0) return `${n}d late`;
   if (n === 0) return 'Today';
   if (n === -1) return 'Tomorrow';
-  if (n > -7) return new Date(Date.parse(d)).toLocaleDateString('en-IN', { weekday: 'short', timeZone: 'UTC' });
-  return fmtDate(d);
+  if (n > -7) return dayName(d);
+  return new Date(Date.parse(d)).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', timeZone: 'UTC' });
 };
 const ago = (ts) => {
   if (!ts) return '';
@@ -32,21 +34,149 @@ const ago = (ts) => {
   if (m < 1440) return `${Math.round(m / 60)}h ago`;
   return `${Math.round(m / 1440)}d ago`;
 };
+const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+function parseQuick(s) {
+  s = (s || '').trim().toLowerCase();
+  const t = today();
+  if (!s) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  if (['today', 'tod'].includes(s)) return t;
+  if (['tomorrow', 'tom', 'tmrw', 'tmr'].includes(s)) return addDays(t, 1);
+  const plus = s.match(/^\+(\d+)\s*(d|w|days?|weeks?)?$/);
+  if (plus) return addDays(t, +plus[1] * (/^w/.test(plus[2] || '') ? 7 : 1));
+  const days = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+  const next = s.startsWith('next ');
+  const name = next ? s.slice(5) : s;
+  const idx = days.findIndex((d) => name.startsWith(d));
+  if (idx >= 0) return !next && idx > dow(t) ? addDays(t, idx - dow(t)) : nextDow(idx);
+  const parsed = Date.parse(`${s} ${new Date().getFullYear()}`);
+  if (!isNaN(parsed)) { const d = ymd(new Date(parsed)); return d < t ? ymd(new Date(Date.parse(`${s} ${new Date().getFullYear() + 1}`))) : d; }
+  return null;
+}
+
+/* ---------- small helpers ---------- */
 const initials = (n = '') => n.split(' ').filter(Boolean).slice(0, 2).map((w) => w[0]).join('').toUpperCase();
 const first = (n = '') => n.split(' ')[0];
 const isLate = (t) => t.status !== 'done' && t.due_date && t.due_date < today();
 const needsDate = (t) => t.status !== 'done' && (!t.due_date || !t.priority);
+const isQuiet = (t) => t.status !== 'done' && diff((t.last_update_at || t.created_at).slice(0, 10), today()) >= 7;
+const hash = (s = '') => { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return Math.abs(h); };
+const AV = ['#FFE680', '#BFE6F7', '#F7D2D3', '#D9CCF4', '#D6F0E2', '#FFE0C2', '#E3E6EE', '#F5D7EC'];
+const avColor = (id) => AV[hash(id || '') % AV.length];
+const DCOL = ['#FFD600', '#CF3339', '#F2994A', '#4FB286', '#09A6E0', '#9B7BE0', '#17181B', '#E07BB5', '#C4A35A', '#2BB3A3', '#6E8BD8', '#A0A4AB'];
+const LTINT = [['#FFF4B8', '#6B5800'], ['#E6F6FD', '#06688D'], ['#FBE4E5', '#A3262B'], ['#E6F5EE', '#2F7A57'], ['#EFE9FB', '#5B3FA8'], ['#FDEEDF', '#8A4B1A'], ['#F1F1F3', '#3B3D44']];
+const listTint = (name = '') => LTINT[hash(name) % LTINT.length];
+const PRI = { P1: 'Urgent', P2: 'Normal', P3: 'Low' };
+let NAV = [];
+const setNav = (items) => { NAV = items.map((t) => t.id); };
 
-/* ---------- icons ---------- */
-const Icon = ({ d }) => html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
-const ICONS = {
-  overview: html`<rect x="4" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.5"/>`,
-  mine: html`<circle cx="12" cy="12" r="8"/><path d="M8.5 12l2.5 2.5 4.5-5"/>`,
-  dept: html`<circle cx="9" cy="9" r="3.2"/><circle cx="16.5" cy="10" r="2.6"/><path d="M3.5 19c.8-3 3-4.5 5.5-4.5s4.7 1.5 5.5 4.5"/><path d="M15 15c2.2 0 4 1.2 5 3.6"/>`,
-  all: html`<path d="M5 6h14M5 12h14M5 18h14"/>`,
+const Svg = (p) => html`<svg width=${p.s || 14} height=${p.s || 14} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width=${p.w || 2} stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${p.children}</svg>`;
+const I = {
+  cal: html`<${Svg} s="13"><rect x="4" y="5" width="16" height="15" rx="3"/><path d="M4 10h16M9 3v4M15 3v4"/></${Svg}>`,
+  bubble: html`<${Svg} s="13"><path d="M5 5h14v10H10l-4 4v-4H5z"/></${Svg}>`,
+  search: html`<${Svg} s="14"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></${Svg}>`,
+  plus: html`<${Svg} s="14" w="2.4"><path d="M12 5v14M5 12h14"/></${Svg}>`,
+  caret: html`<svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M9 6l6 6-6 6z"/></svg>`,
+  check: html`<${Svg} s="13" w="3"><path d="M5 12.5l4.5 4.5L19 7.5"/></${Svg}>`,
+  spark: html`<${Svg} s="14"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/></${Svg}>`,
+  overview: html`<${Svg} s="16" w="1.8"><rect x="4" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.5"/></${Svg}>`,
+  mine: html`<${Svg} s="16" w="1.8"><circle cx="12" cy="12" r="8"/><path d="M8.5 12l2.5 2.5 4.5-5"/></${Svg}>`,
+  all: html`<${Svg} s="16" w="1.8"><path d="M5 6h14M5 12h14M5 18h14"/></${Svg}>`,
+  dept: html`<${Svg} s="16" w="1.8"><circle cx="9" cy="9" r="3.2"/><circle cx="16.5" cy="10" r="2.6"/><path d="M3.5 19c.8-3 3-4.5 5.5-4.5s4.7 1.5 5.5 4.5"/><path d="M15 15c2.2 0 4 1.2 5 3.6"/></${Svg}>`,
+  pin: html`<${Svg} s="14" w="1.8"><path d="M9 4h6l-1 6 3 3H7l3-3z"/><path d="M12 13v7"/></${Svg}>`,
+};
+const LIcon = ({ name, sm }) => { const [bg, fg] = listTint(name); return html`<span class=${'licon' + (sm ? ' sm' : '')} style=${`background:${bg};color:${fg}`} aria-hidden="true">${(name || '·')[0].toUpperCase()}</span>`; };
+
+function usePop() {
+  const [open, setOpen] = useState(false);
+  const ref = useRef();
+  useEffect(() => {
+    if (!open) return;
+    const h = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    const k = (e) => { if (e.key === 'Escape') { e.stopPropagation(); setOpen(false); } };
+    document.addEventListener('mousedown', h); document.addEventListener('keydown', k, true);
+    setTimeout(() => ref.current?.querySelector('.pop input')?.focus(), 0);
+    return () => { document.removeEventListener('mousedown', h); document.removeEventListener('keydown', k, true); };
+  }, [open]);
+  return [open, setOpen, ref];
+}
+const useWide = () => {
+  const mq = '(min-width: 761px)';
+  const [w, setW] = useState(() => matchMedia(mq).matches);
+  useEffect(() => { const m = matchMedia(mq); const h = () => setW(m.matches); m.addEventListener('change', h); return () => m.removeEventListener('change', h); }, []);
+  return w;
 };
 
-/* ---------- app ---------- */
+/* ---------- query language (search, command bar, pinned views) ---------- */
+function parseQuery(text, ctx) {
+  const f = { text: [], owner: null, dept: null, list: null, prio: null, status: null, when: null, quiet: false };
+  let rest = ` ${(text || '').toLowerCase()} `;
+  const take = (re) => { const m = rest.match(re); if (m) { rest = rest.replace(m[0], ' '); return m; } return null; };
+  if (take(/\s(late|overdue)\s/)) f.status = 'late';
+  else if (take(/\sblocked\s/)) f.status = 'blocked';
+  else if (take(/\s(done|completed)\s/)) f.status = 'done';
+  else if (take(/\s(no date|needs date|undated|no priority)\s/)) f.status = 'nodate';
+  const p = take(/\s(p1|urgent|p2|normal|p3|low)\s/);
+  if (p) f.prio = { p1: 'P1', urgent: 'P1', p2: 'P2', normal: 'P2', p3: 'P3', low: 'P3' }[p[1]];
+  if (take(/\s(no update|quiet|stale)\s/)) f.quiet = true;
+  if (take(/\stoday\s/)) f.when = 'today';
+  else if (take(/\stomorrow\s/)) f.when = 'tomorrow';
+  else if (take(/\s(this week|week)\s/)) f.when = 'week';
+  const depts = [...ctx.depts].sort((a, b) => b.name.length - a.name.length);
+  for (const d of depts) {
+    const n = d.name.toLowerCase(); const w = n.split(' ')[0];
+    if (rest.includes(` ${n} `)) { f.dept = d.id; rest = rest.replace(n, ' '); break; }
+    const unique = w.length > 4 && depts.filter((x) => x.name.toLowerCase().split(' ')[0] === w).length === 1;
+    if (unique && rest.includes(` ${w} `)) { f.dept = d.id; rest = rest.replace(` ${w} `, ' '); break; }
+  }
+  for (const pp of ctx.people) { const full = pp.name.toLowerCase(); const fn = full.split(' ')[0]; if (rest.includes(` ${full} `)) { f.owner = pp.id; rest = rest.replace(full, ' '); break; } if (rest.includes(` ${fn} `) && fn.length > 2) { f.owner = pp.id; rest = rest.replace(` ${fn} `, ' '); break; } }
+  for (const l of ctx.lists) { const n = l.name.toLowerCase(); if (n.length > 3 && rest.includes(` ${n} `) && (!f.dept || l.department_id === f.dept)) { f.list = l.id; rest = rest.replace(n, ' '); break; } }
+  rest = rest.replace(/\s('s|s)\s/g, ' ');
+  f.text = rest.split(/\s+/).filter((w) => w && !['in', 'the', 'and', 'with', 'for', 'of', 'tasks', 'task', 'all', 'show', 'me'].includes(w));
+  return f;
+}
+function matchQuery(t, f, ctx) {
+  const td = today();
+  if (f.status === 'late' && !isLate(t)) return false;
+  if (f.status === 'blocked' && t.status !== 'blocked') return false;
+  if (f.status === 'done' && t.status !== 'done') return false;
+  if (f.status === 'nodate' && !needsDate(t)) return false;
+  if (f.status !== 'done' && t.status === 'done') return false;
+  if (f.owner && t.owner_id !== f.owner) return false;
+  if (f.dept && t.department_id !== f.dept) return false;
+  if (f.list && t.task_list_id !== f.list) return false;
+  if (f.prio && t.priority !== f.prio) return false;
+  if (f.quiet && !isQuiet(t)) return false;
+  if (f.when === 'today' && t.due_date !== td) return false;
+  if (f.when === 'tomorrow' && t.due_date !== addDays(td, 1)) return false;
+  if (f.when === 'week' && !(t.due_date && t.due_date >= weekStart() && t.due_date <= weekEnd())) return false;
+  if (f.text.length) { const hay = `${t.title} ${t.notes || ''} ${t.last_update_body || ''}`.toLowerCase(); if (!f.text.every((w) => hay.includes(w))) return false; }
+  return true;
+}
+function describeQuery(f, ctx) {
+  const parts = [];
+  if (f.owner) parts.push(ctx.person(f.owner)?.name);
+  if (f.dept) parts.push(ctx.dept(f.dept)?.name);
+  if (f.list) parts.push(ctx.list(f.list)?.name);
+  if (f.status) parts.push({ late: 'late', blocked: 'blocked', done: 'done', nodate: 'needs date' }[f.status]);
+  if (f.prio) parts.push(PRI[f.prio]);
+  if (f.quiet) parts.push('no update in 7 days');
+  if (f.when) parts.push({ today: 'due today', tomorrow: 'due tomorrow', week: 'due this week' }[f.when]);
+  if (f.text.length) parts.push(`“${f.text.join(' ')}”`);
+  return parts.join(', ');
+}
+const pinsKey = () => 'bs_pins';
+const loadPins = () => { try { return JSON.parse(localStorage.getItem(pinsKey()) || '[]'); } catch (_) { return []; } };
+const savePins = (p) => { try { localStorage.setItem(pinsKey(), JSON.stringify(p)); } catch (_) {} };
+
+/* ---------- app shell ---------- */
+function parseHash() {
+  const h = decodeURIComponent(location.hash.slice(1));
+  if (h.startsWith('task=')) return { task: h.slice(5) };
+  const [view, q] = h.split('?');
+  return { view: view || null, ...Object.fromEntries(new URLSearchParams(q || '')) };
+}
+
 function App() {
   const [session, setSession] = useState(undefined);
   const [me, setMe] = useState(null);
@@ -54,14 +184,22 @@ function App() {
   const [route, setRoute] = useState(parseHash());
   const [sheet, setSheet] = useState(null);
   const [toast, setToast] = useState(null);
+  const [palette, setPalette] = useState(false);
   const [error, setError] = useState('');
+  const [pins, setPins] = useState(loadPins());
+  const loadTimer = useRef();
 
   useEffect(() => {
     sb.auth.getSession().then(({ data }) => setSession(data.session));
     const { data: sub } = sb.auth.onAuthStateChange((_e, s) => setSession(s));
     const onHash = () => setRoute(parseHash());
     window.addEventListener('hashchange', onHash);
-    return () => { sub.subscription.unsubscribe(); window.removeEventListener('hashchange', onHash); };
+    const k = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); setPalette((p) => !p); }
+      else if (e.key === '/' && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) { e.preventDefault(); setPalette(true); }
+    };
+    window.addEventListener('keydown', k);
+    return () => { sub.subscription.unsubscribe(); window.removeEventListener('hashchange', onHash); window.removeEventListener('keydown', k); };
   }, []);
 
   async function load() {
@@ -78,18 +216,23 @@ function App() {
       ]);
       const err = [p, d, m, l, t, done, dcr].find((r) => r.error);
       if (err) throw err.error;
-      const meRow = p.data.find((x) => x.auth_user_id === session.user.id) ?? null;
-      setMe(meRow);
+      setMe(p.data.find((x) => x.auth_user_id === session.user.id) ?? null);
       setData({ people: p.data, depts: d.data, members: m.data, lists: l.data, tasks: [...t.data, ...done.data], dcr: dcr.data });
       setError('');
     } catch (e) { setError(e.message || 'Could not load tasks.'); }
   }
-  useEffect(() => { if (session) load(); }, [session?.user?.id]);
+  const softLoad = () => { clearTimeout(loadTimer.current); loadTimer.current = setTimeout(load, 700); };
   useEffect(() => {
-    const onFocus = () => session && load();
+    if (!session) return;
+    load();
+    const ch = sb.channel('live')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, softLoad)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'task_updates' }, softLoad)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'date_change_requests' }, softLoad)
+      .subscribe();
+    const onFocus = () => softLoad();
     window.addEventListener('focus', onFocus);
-    const iv = setInterval(onFocus, 120000);
-    return () => { window.removeEventListener('focus', onFocus); clearInterval(iv); };
+    return () => { sb.removeChannel(ch); window.removeEventListener('focus', onFocus); };
   }, [session?.user?.id]);
   useEffect(() => { if (route.task && data) setSheet({ mode: 'edit', id: route.task }); }, [route.task, !!data]);
 
@@ -99,69 +242,52 @@ function App() {
   if (!data) return html`<p class="boot">Loading tasks…</p>`;
   if (!me) return html`<div class="login"><div class="card"><h1>No access yet</h1><p>${session.user.email} is not set up in BS Tasks. Ask Bhargav to add you.</p><button class="btn big" onClick=${() => sb.auth.signOut()}>Sign out</button></div></div>`;
 
-  const ctx = makeCtx({ me, data, setData, load, setSheet, setToast });
+  const ctx = makeCtx({ me, data, setData, load, setSheet, setToast, setPalette, pins, setPins });
   const isAdmin = me.role === 'admin';
   const view = route.view || (isAdmin ? 'overview' : 'mine');
-  const nav = [
-    isAdmin && { id: 'overview', label: 'Overview', n: ctx.needsYou().length },
-    { id: 'mine', label: 'My tasks', n: ctx.mine().filter((t) => t.status !== 'done').length },
-    { id: 'dept', label: 'Department' },
-    (isAdmin || ctx.headDepts.length) && { id: 'all', label: 'All tasks', n: ctx.visibleOpen().length },
-  ].filter(Boolean);
+  const closeSheet = () => { setSheet(null); if (location.hash.startsWith('#task=')) history.replaceState(null, '', '#' + view); };
 
   return html`
     <div class="shell">
-      <nav class="side" aria-label="Main">
-        <div class="brand"><span class="mark" aria-hidden="true"></span>BS Tasks</div>
-        ${nav.map((n) => html`<a class="navlink" href=${'#' + n.id} aria-current=${view === n.id ? 'page' : null}>${n.label}${n.n != null ? html`<span class="n num">${n.n}</span>` : ''}</a>`)}
-        <div class="grow"></div>
-        <div class="who">${me.name}</div>
-        <button class="linkbtn" style="padding:0 12px;text-align:left" onClick=${() => sb.auth.signOut()}>Sign out</button>
-      </nav>
-      <main class="page" id="main">
+      <${Sidebar} ctx=${ctx} view=${view} route=${route} />
+      <div class="main">
         ${view === 'overview' && isAdmin ? html`<${Overview} ctx=${ctx} />` : ''}
         ${view === 'mine' || (view === 'overview' && !isAdmin) ? html`<${Mine} ctx=${ctx} />` : ''}
         ${view === 'dept' ? html`<${Dept} ctx=${ctx} route=${route} />` : ''}
         ${view === 'all' ? html`<${AllTasks} ctx=${ctx} route=${route} />` : ''}
-      </main>
-      <nav class="tabs" aria-label="Main">
-        ${nav.map((n) => html`<a class="tab" href=${'#' + n.id} aria-current=${view === n.id ? 'page' : null}><${Icon} d=${ICONS[n.id]} />${n.label === 'My tasks' ? 'Mine' : n.label === 'All tasks' ? 'All' : n.label}</a>`)}
+      </div>
+      <nav class="mtabs" aria-label="Main">
+        ${[isAdmin && ['overview', 'Overview'], ['mine', 'Mine'], ['dept', 'Teams'], ['all', 'All']].filter(Boolean).map(([id, l]) => html`<a class="mtab" href=${'#' + id} aria-current=${view === id ? 'page' : null}>${I[id === 'dept' ? 'dept' : id]}${l}</a>`)}
+        <button class="mtab" onClick=${() => setPalette(true)}>${I.search}Search</button>
       </nav>
-      <${Composer} ctx=${ctx} deptHint=${view === 'dept' ? route.dept : null} />
-      ${sheet ? html`<${TaskSheet} ctx=${ctx} sheet=${sheet} close=${() => { setSheet(null); if (location.hash.startsWith('#task=')) history.replaceState(null, '', '#' + view); }} />` : ''}
+      <${Composer} ctx=${ctx} deptHint=${view === 'dept' ? route.dept : null} listHint=${view === 'dept' ? route.list : null} />
+      ${sheet ? html`<${TaskSheet} ctx=${ctx} sheet=${sheet} close=${closeSheet} />` : ''}
+      ${palette ? html`<${Palette} ctx=${ctx} close=${() => setPalette(false)} />` : ''}
       ${toast ? html`<${Toast} toast=${toast} done=${() => setToast(null)} />` : ''}
     </div>`;
 }
 
-function parseHash() {
-  const h = decodeURIComponent(location.hash.slice(1));
-  if (h.startsWith('task=')) return { task: h.slice(5) };
-  const [view, q] = h.split('?');
-  const params = Object.fromEntries(new URLSearchParams(q || ''));
-  return { view: view || null, ...params };
-}
-
-/* ---------- shared helpers bound to data ---------- */
-function makeCtx({ me, data, setData, load, setSheet, setToast }) {
+function makeCtx({ me, data, setData, load, setSheet, setToast, setPalette, pins, setPins }) {
   const { people, depts, members, lists, tasks, dcr } = data;
   const person = (id) => people.find((p) => p.id === id);
   const dept = (id) => depts.find((d) => d.id === id);
   const list = (id) => lists.find((l) => l.id === id);
+  const deptColor = (id) => DCOL[(dept(id)?.sort_order ?? 1) - 1] || '#A0A4AB';
   const isAdmin = me.role === 'admin';
   const myDepts = members.filter((m) => m.person_id === me.id).map((m) => m.department_id);
   const headDepts = members.filter((m) => m.person_id === me.id && m.is_head).map((m) => m.department_id);
   const isHead = (d) => headDepts.includes(d);
-  const canSeeStats = (personId) => isAdmin || personId === me.id || members.some((m) => m.person_id === personId && headDepts.includes(m.department_id));
+  const canSeeStats = (pid) => isAdmin || pid === me.id || members.some((m) => m.person_id === pid && headDepts.includes(m.department_id));
   const canDecide = (t) => isAdmin || isHead(t.department_id) || t.created_by === me.id;
   const canRedate = (t) => isAdmin || isHead(t.department_id) || t.created_by === me.id;
   const canEdit = (t) => isAdmin || isHead(t.department_id) || t.owner_id === me.id || t.created_by === me.id;
+  const canOwner = (t) => isAdmin || isHead(t.department_id) || t.created_by === me.id;
+  const canManageLists = (d) => isAdmin || isHead(d);
   const open = () => tasks.filter((t) => t.status !== 'done');
-  const visibleOpen = () => open();
   const mine = () => tasks.filter((t) => t.owner_id === me.id);
+  const ownerDept = (pid) => members.find((m) => m.person_id === pid)?.department_id;
 
-  function patchLocal(ids, fields) {
-    setData((d) => ({ ...d, tasks: d.tasks.map((t) => (ids.includes(t.id) ? { ...t, ...fields } : t)) }));
-  }
+  function patchLocal(ids, fields) { setData((d) => ({ ...d, tasks: d.tasks.map((t) => (ids.includes(t.id) ? { ...t, ...fields, updated_at: new Date().toISOString() } : t)) })); }
   async function update(ids, fields, msg, undoFields) {
     ids = [].concat(ids);
     patchLocal(ids, fields);
@@ -170,14 +296,13 @@ function makeCtx({ me, data, setData, load, setSheet, setToast }) {
     if (msg) setToast({ text: msg, undo: undoFields ? async () => { patchLocal(ids, undoFields); await sb.from('tasks').update(undoFields).in('id', ids); load(); } : null });
     return true;
   }
-  async function save(t, fields, onSaved) { if (await update(t.id, fields, null)) onSaved?.(t.id); }
+  const save = async (t, fields, onSaved) => { if (await update(t.id, fields, null)) onSaved?.(t.id); };
   const done = (t) => update(t.id, { status: 'done', completed_at: new Date().toISOString() }, 'Marked done', { status: 'open', completed_at: null });
   const reopen = (t) => update(t.id, { status: 'open', completed_at: null }, 'Reopened');
 
   function needsYou() {
     if (!isAdmin) return [];
-    const td = today();
-    const out = [];
+    const td = today(); const out = [];
     for (const r of dcr) {
       const t = tasks.find((x) => x.id === r.task_id);
       if (t) out.push({ key: 'd' + r.id, kind: 'Date change', t, title: `${t.title} → ${shortDue(r.proposed_due)}`, who: `${first(person(r.requested_by)?.name)}, ${dept(t.department_id)?.name}${t.slip_count ? `, moved ${t.slip_count}× already` : ''}`, req: r });
@@ -185,35 +310,32 @@ function makeCtx({ me, data, setData, load, setSheet, setToast }) {
     for (const t of open()) {
       const who = `${first(person(t.owner_id)?.name)}, ${dept(t.department_id)?.name}`;
       if (t.owner_id === me.id && t.request_status === 'pending') out.push({ key: 'r' + t.id, kind: 'Request', t, title: t.title, who: `From ${first(person(t.created_by)?.name)}`, request: true });
-      else if (t.status === 'blocked' && diff(t.updated_at.slice(0, 10), td) >= 3) out.push({ key: 'b' + t.id, kind: 'Blocked', t, title: `${t.title}, ${diff(t.updated_at.slice(0, 10), td)}d`, who: t.blocked_on_person_id ? `Waiting on ${first(person(t.blocked_on_person_id)?.name)}` : who });
-      else if (t.priority === 'P1' && isLate(t)) out.push({ key: 'l' + t.id, kind: 'P1 late', t, title: `${t.title}, ${diff(t.due_date, td)}d`, who });
+      else if (t.status === 'blocked' && diff(t.updated_at.slice(0, 10), td) >= 3) out.push({ key: 'b' + t.id, kind: 'Blocked', t, title: t.title, who: t.blocked_on_person_id ? `Waiting on ${first(person(t.blocked_on_person_id)?.name)}, ${diff(t.updated_at.slice(0, 10), td)}d` : who });
+      else if (t.priority === 'P1' && isLate(t)) out.push({ key: 'l' + t.id, kind: 'Urgent, late', t, title: t.title, who });
       else if (t.slip_count >= 2) out.push({ key: 's' + t.id, kind: `Moved ${t.slip_count}×`, t, title: t.title, who });
-      else if (!t.acknowledged_at && t.owner_id !== t.created_by && diff(t.created_at.slice(0, 10), td) >= 1 && t.due_date) out.push({ key: 'a' + t.id, kind: 'Not seen', t, title: t.title, who });
-      else if (t.due_date && ['P1', 'P2'].includes(t.priority) && diff((t.last_update_at || t.created_at).slice(0, 10), td) >= 7) out.push({ key: 'q' + t.id, kind: 'Quiet', t, title: `${t.title}, ${diff((t.last_update_at || t.created_at).slice(0, 10), td)}d`, who });
+      else if (!t.acknowledged_at && t.owner_id !== t.created_by && t.due_date && diff(t.created_at.slice(0, 10), td) >= 1) out.push({ key: 'a' + t.id, kind: 'Not seen', t, title: t.title, who });
+      else if (t.due_date && ['P1', 'P2'].includes(t.priority) && isQuiet(t)) out.push({ key: 'q' + t.id, kind: 'Quiet', t, title: t.title, who: `${who}, ${diff((t.last_update_at || t.created_at).slice(0, 10), td)}d` });
     }
     return out;
   }
   async function decideDate(req, approve) {
     const { error } = await sb.rpc('decide_date_change', { req: req.id, approve });
     if (error) return setToast({ text: error.message });
-    setToast({ text: approve ? 'Date change approved' : 'Date change rejected' });
-    load();
+    setToast({ text: approve ? 'Date change approved' : 'Date change rejected' }); load();
+  }
+  async function approveOther(req, date) {
+    if (!(await update(req.task_id, { due_date: date }, null))) return;
+    await sb.from('date_change_requests').update({ status: 'approved', proposed_due: date, decided_by: me.id, decided_at: new Date().toISOString() }).eq('id', req.id);
+    setToast({ text: `Moved to ${fmtDate(date)}` }); load();
   }
   async function decideRequest(t, accept, note) {
-    const fields = accept ? { request_status: 'accepted', acknowledged_at: new Date().toISOString() } : { request_status: 'declined', request_note: note || null, status: 'done' };
-    await update(t.id, fields, accept ? 'Accepted' : 'Declined');
+    await update(t.id, accept ? { request_status: 'accepted', acknowledged_at: new Date().toISOString() } : { request_status: 'declined', request_note: note || null, status: 'done' }, accept ? 'Accepted' : 'Declined');
   }
   async function nudge(t, kind, target) {
     setToast({ text: 'Sending…' });
-    const { data, error } = await sb.functions.invoke('nudge', { body: { task_id: t.id, kind, target } });
-    if (error || data?.error) return setToast({ text: data?.error || 'Could not send. Try again.' });
-    setToast({ text: kind === 'ask' ? `Asked ${first(data.to)} for an update` : `Nudged ${first(data.to)}` });
-  }
-  async function approveOther(req, date) {
-    const ok = await update(req.task_id, { due_date: date }, null);
-    if (!ok) return;
-    await sb.from('date_change_requests').update({ status: 'approved', proposed_due: date, decided_by: me.id, decided_at: new Date().toISOString() }).eq('id', req.id);
-    setToast({ text: `Moved to ${fmtDate(date)}` }); load();
+    const { data: r, error } = await sb.functions.invoke('nudge', { body: { task_id: t.id, kind, target } });
+    if (error || r?.error) return setToast({ text: r?.error || 'Could not send. Try again.' });
+    setToast({ text: kind === 'ask' ? `Asked ${first(r.to)} for an update` : `Nudged ${first(r.to)}` });
   }
   async function createList(deptId) {
     const name = (prompt('Name of the new task list') || '').trim();
@@ -221,73 +343,160 @@ function makeCtx({ me, data, setData, load, setSheet, setToast }) {
     const { data: row, error } = await sb.from('task_lists').insert({ department_id: deptId, name }).select().single();
     if (error) { setToast({ text: error.code === '23505' ? 'A list with that name already exists' : error.message }); return null; }
     setData((d) => ({ ...d, lists: [...d.lists, row].sort((a, b) => a.name.localeCompare(b.name)) }));
-    setToast({ text: `List "${name}" created` });
+    setToast({ text: `List “${name}” created` });
     return row.id;
   }
-  const canManageLists = (deptId) => isAdmin || isHead(deptId);
-  const openTask = (t) => setSheet({ mode: 'edit', id: t.id });
-  const newTask = (prefill) => setSheet({ mode: 'new', prefill });
+  async function moveTo(ids, fields, label) {
+    const ok = ids.filter((id) => { const t = tasks.find((x) => x.id === id); return t && canEdit(t) && (!('due_date' in fields) || canRedate(t)) && (!('department_id' in fields) || isAdmin || isHead(t.department_id)); });
+    if (!ok.length) return setToast({ text: 'You can’t move that task.' });
+    await update(ok, fields, label);
+  }
+  const addPin = (name, query) => { const p = [...pins.filter((x) => x.name !== name), { name, query }]; setPins(p); savePins(p); };
+  const removePin = (name) => { const p = pins.filter((x) => x.name !== name); setPins(p); savePins(p); };
 
-  return { me, data, people, depts, members, lists, tasks, dcr, person, dept, list, isAdmin, myDepts, headDepts, isHead, canSeeStats, canDecide, canRedate, canEdit, save,
-    open, visibleOpen, mine, update, done, reopen, needsYou, decideDate, decideRequest, nudge, approveOther, createList, canManageLists, openTask, newTask, load, setToast, setSheet };
+  return { me, data, people, depts, members, lists, tasks, dcr, person, dept, list, deptColor, isAdmin, myDepts, headDepts, isHead, canSeeStats, canDecide, canRedate, canEdit, canOwner, canManageLists,
+    open, mine, ownerDept, update, save, done, reopen, needsYou, decideDate, approveOther, decideRequest, nudge, createList, moveTo, load, setToast, setSheet, setPalette,
+    openTask: (t) => setSheet({ mode: 'edit', id: t.id }), newTask: (prefill) => setSheet({ mode: 'new', prefill }), pins, addPin, removePin };
 }
 
-/* ---------- login ---------- */
 function Login() {
   const [busy, setBusy] = useState(false);
-  const go = async () => {
-    setBusy(true);
-    await sb.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: location.origin + location.pathname, queryParams: { hd: DOMAIN, prompt: 'select_account' } } });
-  };
+  const go = async () => { setBusy(true); await sb.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: location.origin + location.pathname, queryParams: { hd: DOMAIN, prompt: 'select_account' } } }); };
   return html`<div class="login"><div class="card">
-    <h1><span class="mark" aria-hidden="true"></span>BS Tasks</h1>
+    <h1><span class="logo">${I.check}</span>BS Tasks</h1>
     <p class="note">Sign in with your ${DOMAIN} Google account.</p>
     <button class="btn primary big" disabled=${busy} onClick=${go}>${busy ? 'Opening Google…' : 'Sign in with Google'}</button>
   </div></div>`;
 }
 
-/* ---------- inline editing ---------- */
-const PCOL = { P1: 'var(--help)', P2: 'var(--behind)', P3: 'var(--p3)' };
-const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-function parseQuick(s) {
-  s = (s || '').trim().toLowerCase();
-  const t = today();
-  if (!s) return null;
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-  if (['today', 'tod'].includes(s)) return t;
-  if (['tomorrow', 'tom', 'tmrw', 'tmr'].includes(s)) return addDays(t, 1);
-  const plus = s.match(/^\+?(\d+)\s*(d|w|days?|weeks?)?$/);
-  if (plus && s.startsWith('+')) return addDays(t, +plus[1] * (/^w/.test(plus[2] || '') ? 7 : 1));
-  const days = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
-  const next = s.startsWith('next ');
-  const name = next ? s.slice(5) : s;
-  const idx = days.findIndex((d) => name.startsWith(d));
-  if (idx >= 0) return !next && idx > dow(t) ? addDays(t, idx - dow(t)) : nextDow(idx);
-  const parsed = Date.parse(`${s} ${new Date().getFullYear()}`);
-  if (!isNaN(parsed)) { const d = ymd(new Date(parsed)); return d < t ? ymd(new Date(Date.parse(`${s} ${new Date().getFullYear() + 1}`))) : d; }
-  return null;
+/* ---------- sidebar with department → list tree, pins, drop targets ---------- */
+function useDrop(onDrop) {
+  const [over, setOver] = useState(false);
+  return [over, {
+    onDragOver: (e) => { if (e.dataTransfer.types.includes('text/bs-task')) { e.preventDefault(); setOver(true); } },
+    onDragLeave: () => setOver(false),
+    onDrop: (e) => { e.preventDefault(); setOver(false); const ids = (e.dataTransfer.getData('text/bs-task') || '').split(',').filter(Boolean); if (ids.length) onDrop(ids); },
+  }];
 }
-function usePop() {
-  const [open, setOpen] = useState(false);
+function SideDept({ ctx, d, route, view }) {
+  const activeDept = view === 'dept' && route.dept === d.id;
+  const [open, setOpen] = useState(activeDept);
+  useEffect(() => { if (activeDept) setOpen(true); }, [activeDept]);
+  const openTasks = ctx.open().filter((t) => t.department_id === d.id);
+  const lists = ctx.lists.filter((l) => l.department_id === d.id).map((l) => ({ ...l, n: openTasks.filter((t) => t.task_list_id === l.id).length })).sort((a, b) => b.n - a.n || a.name.localeCompare(b.name));
+  const [over, dropProps] = useDrop((ids) => ctx.moveTo(ids, { department_id: d.id, task_list_id: null }, `Moved to ${d.name}`));
+  return html`<div>
+    <a class=${'nl' + (over ? ' drop' : '')} href=${'#dept?dept=' + d.id} aria-current=${activeDept && !route.list ? 'page' : null} ...${dropProps}>
+      <span role="button" tabindex="0" aria-label=${open ? 'Collapse lists' : 'Show lists'} aria-expanded=${open} class=${'caret' + (open ? ' open' : '')} style="display:inline-flex;width:12px;height:12px;color:var(--faint)" onClick=${(e) => { e.preventDefault(); e.stopPropagation(); setOpen(!open); }}>${I.caret}</span>
+      <span class="ddot" style=${'background:' + ctx.deptColor(d.id)}></span><span>${d.name}</span><span class="c">${openTasks.length}</span>
+    </a>
+    ${open ? html`${lists.map((l) => html`<${SideList} ctx=${ctx} d=${d} l=${l} active=${activeDept && route.list === l.id} />`)}
+      ${ctx.canManageLists(d.id) ? html`<button class="nl sub" style="color:var(--faint)" onClick=${async () => { const id = await ctx.createList(d.id); if (id) location.hash = `dept?dept=${d.id}&list=${id}`; }}>+ New list</button>` : ''}` : ''}
+  </div>`;
+}
+function SideList({ ctx, d, l, active }) {
+  const [over, dropProps] = useDrop((ids) => ctx.moveTo(ids, { task_list_id: l.id }, `Moved to ${l.name}`));
+  return html`<a class=${'nl sub' + (over ? ' drop' : '')} href=${`#dept?dept=${d.id}&list=${l.id}`} aria-current=${active ? 'page' : null} ...${dropProps}><${LIcon} name=${l.name} sm />${l.name}<span class="c">${l.n || ''}</span></a>`;
+}
+function Sidebar({ ctx, view, route }) {
+  const isAdmin = ctx.isAdmin;
+  const myDepts = isAdmin ? ctx.depts : ctx.depts.filter((d) => ctx.myDepts.includes(d.id));
+  const nav = [
+    isAdmin && ['overview', 'Overview', ctx.needsYou().length],
+    ['mine', 'My tasks', ctx.mine().filter((t) => t.status !== 'done').length],
+    (isAdmin || ctx.headDepts.length) && ['all', 'All tasks', ctx.open().length],
+  ].filter(Boolean);
+  return html`<nav class="side" aria-label="Main">
+    <div class="brand"><span class="logo">${I.check}</span>BS Tasks</div>
+    <button class="searchbtn" onClick=${() => ctx.setPalette(true)}>${I.search}Search or jump to<kbd>⌘K</kbd></button>
+    ${nav.map(([id, l, n]) => html`<a class="nl" href=${'#' + id} aria-current=${view === id && !route.pin ? 'page' : null}><span class="ic">${I[id]}</span>${l}<span class="c">${n}</span></a>`)}
+    ${ctx.pins.length ? html`<div class="sidelabel">Pinned</div>${ctx.pins.map((p) => html`<a class="nl" href=${'#all?pin=' + encodeURIComponent(p.name) + '&q=' + encodeURIComponent(p.query)} aria-current=${route.pin === p.name ? 'page' : null}><span class="ic">${I.pin}</span>${p.name}<span class="c">${ctx.tasks.filter((t) => matchQuery(t, parseQuery(p.query, ctx), ctx)).length}</span></a>`)}` : ''}
+    <div class="sidelabel">${isAdmin ? 'Departments' : 'My departments'}</div>
+    ${myDepts.map((d) => html`<${SideDept} key=${d.id} ctx=${ctx} d=${d} route=${route} view=${view} />`)}
+    <div class="grow"></div>
+    <div class="who"><span>${ctx.me.name}</span><button class="linkbtn" style="font-size:12.5px" onClick=${() => sb.auth.signOut()}>Sign out</button></div>
+  </nav>`;
+}
+
+/* ---------- command bar ---------- */
+function Palette({ ctx, close }) {
+  const [q, setQ] = useState('');
+  const [i, setI] = useState(0);
+  const items = useMemo(() => {
+    const s = q.trim().toLowerCase();
+    const out = [];
+    if (s) {
+      const f = parseQuery(q, ctx);
+      const hits = ctx.tasks.filter((t) => matchQuery(t, f, ctx));
+      const desc = describeQuery(f, ctx);
+      if (desc) out.push({ k: 'Filter', label: `${desc}`, hint: `${hits.length} tasks`, run: () => { location.hash = 'all?q=' + encodeURIComponent(q); } });
+      if (ctx.isAdmin && hits.length && hits.length <= 20 && (f.status === 'late' || f.quiet)) out.push({ k: 'Action', label: `${f.quiet ? 'Ask for updates on' : 'Nudge owners of'} these ${hits.length} tasks`, run: async () => { for (const t of hits) await ctx.nudge(t, f.quiet ? 'ask' : 'nudge'); } });
+      ctx.tasks.filter((t) => t.title.toLowerCase().includes(s)).slice(0, 6).forEach((t) => out.push({ k: 'Task', label: t.title, hint: `${first(ctx.person(t.owner_id)?.name)}, ${shortDue(t.due_date)}`, run: () => ctx.openTask(t) }));
+      ctx.people.filter((p) => p.name.toLowerCase().includes(s)).slice(0, 4).forEach((p) => out.push({ k: 'Person', label: p.name, hint: 'Show their tasks', run: () => { location.hash = 'all?q=' + encodeURIComponent(p.name); } }));
+      ctx.depts.filter((d) => d.name.toLowerCase().includes(s)).slice(0, 3).forEach((d) => out.push({ k: 'Go to', label: d.name, run: () => { location.hash = 'dept?dept=' + d.id; } }));
+      ctx.lists.filter((l) => l.name.toLowerCase().includes(s)).slice(0, 4).forEach((l) => out.push({ k: 'List', label: l.name, hint: ctx.dept(l.department_id)?.name, run: () => { location.hash = `dept?dept=${l.department_id}&list=${l.id}`; } }));
+      out.push({ k: 'Create', label: `New task: ${q}`, run: () => document.dispatchEvent(new CustomEvent('bs-compose', { detail: q })) });
+    } else {
+      out.push({ k: 'Try', label: 'vivek late urgent', run: () => setQ('vivek late urgent') });
+      out.push({ k: 'Try', label: 'franchise sales due this week', run: () => setQ('franchise sales due this week') });
+      out.push({ k: 'Try', label: 'no update offline revenue', run: () => setQ('no update offline revenue') });
+      ctx.depts.slice(0, 6).forEach((d) => out.push({ k: 'Go to', label: d.name, run: () => { location.hash = 'dept?dept=' + d.id; } }));
+    }
+    return out;
+  }, [q]);
+  useEffect(() => setI(0), [q]);
+  const run = (it) => { if (!it) return; if (it.k !== 'Try') close(); it.run(); };
+  return html`<div class="palette-scrim" onClick=${close}><div class="palette" role="dialog" aria-modal="true" aria-label="Search and commands" onClick=${(e) => e.stopPropagation()}>
+    <div class="in">${I.search}<input autofocus ref=${(el) => el && setTimeout(() => el.focus(), 0)} placeholder="Search tasks, people, lists, or type a filter like “vivek late urgent”" value=${q} aria-label="Search"
+      onInput=${(e) => setQ(e.target.value)}
+      onKeyDown=${(e) => { if (e.key === 'ArrowDown') { e.preventDefault(); setI(Math.min(i + 1, items.length - 1)); } else if (e.key === 'ArrowUp') { e.preventDefault(); setI(Math.max(i - 1, 0)); } else if (e.key === 'Enter') { e.preventDefault(); run(items[i]); } else if (e.key === 'Escape') close(); }} /><kbd>Esc</kbd></div>
+    <div class="res" role="listbox">${items.map((it, n) => html`<button class="it" role="option" aria-selected=${n === i} onMouseEnter=${() => setI(n)} onClick=${() => run(it)}><span class="k">${it.k}</span><span>${it.label}</span>${it.hint ? html`<span class="h">${it.hint}</span>` : ''}</button>`)}</div>
+    <div class="foot">Words like late, blocked, urgent, today, this week, no update, a name, a department or a list become filters. ↑ ↓ to move, Enter to open.</div>
+  </div></div>`;
+}
+
+function Toast({ toast, done }) {
+  useEffect(() => { const tm = setTimeout(done, toast.undo || toast.action ? 6000 : 2600); return () => clearTimeout(tm); }, [toast]);
+  return html`<div class="toast" role="status">${toast.text}${toast.action ? html`<button onClick=${() => { toast.action.fn(); done(); }}>${toast.action.label}</button>` : ''}${toast.undo ? html`<button onClick=${() => { toast.undo(); done(); }}>Undo</button>` : ''}</div>`;
+}
+
+/* ---------- priority slider ---------- */
+const PORDER = ['P3', 'P2', 'P1'];
+const PTHUMB = { P1: 'var(--p1)', P2: 'var(--ink)', P3: 'var(--faint)' };
+function PrioritySlider({ value, onChange, disabled, inPanel, always }) {
   const ref = useRef();
-  useEffect(() => {
-    if (!open) return;
-    const h = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
-    const k = (e) => { if (e.key === 'Escape') { setOpen(false); ref.current?.querySelector('button')?.focus(); } };
-    document.addEventListener('mousedown', h); document.addEventListener('keydown', k);
-    setTimeout(() => ref.current?.querySelector('.pop input')?.focus(), 0);
-    return () => { document.removeEventListener('mousedown', h); document.removeEventListener('keydown', k); };
-  }, [open]);
-  return [open, setOpen, ref];
+  const [drag, setDrag] = useState(null);
+  const cur = drag ?? value;
+  const idx = PORDER.indexOf(cur);
+  const pick = (clientX) => { const r = ref.current.getBoundingClientRect(); const n = Math.max(0, Math.min(2, Math.floor(((clientX - r.left) / r.width) * 3))); return PORDER[n]; };
+  const down = (e) => { if (disabled) return; e.preventDefault(); ref.current.setPointerCapture?.(e.pointerId); setDrag(pick(e.clientX)); };
+  const move = (e) => { if (drag !== null) setDrag(pick(e.clientX)); };
+  const up = () => { if (drag !== null) { const v = drag; setDrag(null); if (v !== value) onChange(v); } };
+  const key = (e) => {
+    if (disabled) return;
+    const i = Math.max(0, PORDER.indexOf(value));
+    if (e.key === 'ArrowRight' || e.key === 'ArrowUp') { e.preventDefault(); onChange(PORDER[Math.min(2, value ? i + 1 : 1)]); }
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') { e.preventDefault(); onChange(PORDER[Math.max(0, value ? i - 1 : 1)]); }
+    if (['1', '2', '3'].includes(e.key)) { e.preventDefault(); onChange('P' + e.key); }
+  };
+  return html`<div ref=${ref} class=${'slider' + (inPanel ? ' inpanel' : '') + (always ? ' always' : '') + (disabled ? ' disabled' : '')} role="slider" tabindex=${disabled ? -1 : 0}
+    aria-label="Priority" aria-valuemin="1" aria-valuemax="3" aria-valuenow=${idx + 1} aria-valuetext=${cur ? PRI[cur] : 'Not set'}
+    onPointerDown=${down} onPointerMove=${move} onPointerUp=${up} onPointerCancel=${() => setDrag(null)} onKeyDown=${key}>
+    ${cur ? html`<span class="thumb" style=${`left:calc(${idx * 33.33}% + 2px);background:${PTHUMB[cur]}`}></span>` : ''}
+    ${PORDER.map((p) => html`<span class=${'seg' + (cur === p ? ' on' + (p === 'P2' ? ' p2' : '') : '')}>${PRI[p]}</span>`)}
+  </div>`;
 }
-function PriorityPill({ ctx, t, onSaved }) {
+function Prio({ ctx, t, onSaved }) {
+  const [open, setOpen] = useState(false);
   const can = ctx.canEdit(t);
-  const set = (p) => p !== t.priority && ctx.save(t, { priority: p }, onSaved);
-  const next = { P1: 'P2', P2: 'P3', P3: 'P1' }[t.priority] || 'P1';
-  return html`<button class=${'pill' + (t.priority ? '' : ' none')} disabled=${!can} title="Click to cycle, or press 1, 2 or 3" aria-label=${'Priority ' + (t.priority || 'not set')}
-    onClick=${() => set(next)} onKeyDown=${(e) => { if (['1', '2', '3'].includes(e.key)) { e.preventDefault(); set('P' + e.key); } }}>
-    ${t.priority ? html`<span class="dot" style=${'background:' + PCOL[t.priority]}></span>${t.priority}` : 'Set'}</button>`;
+  const set = (p) => { setOpen(false); ctx.save(t, { priority: p }, onSaved); };
+  return html`<div class=${'prio' + (open ? ' open' : '')} onMouseLeave=${() => setOpen(false)}>
+    <button class=${'plabel ' + (t.priority || 'none')} disabled=${!can} onClick=${() => setOpen(true)} aria-label=${'Priority: ' + (t.priority ? PRI[t.priority] : 'not set') + '. Change'}>${t.priority ? PRI[t.priority] : 'Priority'}</button>
+    <${PrioritySlider} value=${t.priority} disabled=${!can} onChange=${set} />
+  </div>`;
 }
+
+/* ---------- date chip ---------- */
 function DateChip({ ctx, t, onSaved }) {
   const [open, setOpen, ref] = usePop();
   const [txt, setTxt] = useState('');
@@ -297,175 +506,360 @@ function DateChip({ ctx, t, onSaved }) {
   const quick = [['Today', td], ['Tomorrow', addDays(td, 1)], ['Fri', parseQuick('fri')], ['Mon', nextDow(0)], ['+1 week', addDays(td, 7)]];
   const guess = parseQuick(txt);
   return html`<span class="anchor" ref=${ref}>
-    <button class=${'chipbtn' + (isLate(t) ? ' late' : t.due_date ? '' : ' muted')} onClick=${() => (can ? setOpen(!open) : ctx.openTask(t))} title=${can ? 'Change deadline' : 'Ask the assigner for a new date'}>${t.status === 'done' ? 'Done' : t.due_date ? shortDue(t.due_date) : 'Set date'}</button>
+    <button class=${'datec' + (isLate(t) ? ' late' : t.due_date ? '' : ' empty')} onClick=${() => (can ? setOpen(!open) : ctx.openTask(t))} title=${can ? 'Change deadline' : 'Ask the assigner for a new date'}>${I.cal}${t.status === 'done' ? 'Done' : shortDue(t.due_date)}</button>
     ${open ? html`<div class="pop" role="dialog" aria-label="Deadline">
-      <input class="field" placeholder="fri, +7, 12 nov" value=${txt} onInput=${(e) => setTxt(e.target.value)} onKeyDown=${(e) => { if (e.key === 'Enter' && guess) set(guess); }} aria-label="Type a date" />
-      ${txt ? html`<span class="note">${guess ? `Enter for ${fmtDate(guess)}` : 'Try fri, +7, 12 nov'}</span>` : ''}
-      <div class="chips">${quick.map(([l, d]) => html`<button class="chip" onClick=${() => set(d)}>${l}</button>`)}</div>
+      <input class="field" placeholder="Type: fri, +7, 12 nov" value=${txt} aria-label="Type a date" onInput=${(e) => setTxt(e.target.value)} onKeyDown=${(e) => { if (e.key === 'Enter' && guess) set(guess); }} />
+      ${txt ? html`<p class="note">${guess ? `Enter for ${fmtDate(guess)}` : 'Try fri, +7, 12 nov'}</p>` : ''}
+      <div class="qchips">${quick.map(([l, d]) => html`<button class="qchip" aria-pressed=${t.due_date === d} onClick=${() => set(d)}>${l}</button>`)}</div>
       <input type="date" class="field" aria-label="Pick a date" value=${t.due_date || ''} onChange=${(e) => set(e.target.value)} />
     </div>` : ''}</span>`;
+}
+
+/* ---------- owner avatar ---------- */
+function Avatar({ ctx, id, size }) {
+  const p = ctx.person(id);
+  return html`<span class="who-av" title=${p?.name} style=${`background:${avColor(id)}${size ? `;width:${size}px;height:${size}px;border-radius:${size / 2}px` : ''}`}>${initials(p?.name || '?')}</span>`;
 }
 function OwnerPick({ ctx, t, onSaved }) {
   const [open, setOpen, ref] = usePop();
   const [q, setQ] = useState('');
   const [i, setI] = useState(0);
-  const can = ctx.isAdmin || ctx.isHead(t.department_id) || t.created_by === ctx.me.id;
+  const can = ctx.canOwner(t);
   const opts = ctx.people.filter((p) => p.name.toLowerCase().includes(q.toLowerCase())).slice(0, 40);
   const pick = (p) => { setOpen(false); setQ(''); setI(0); if (p && p.id !== t.owner_id) ctx.save(t, { owner_id: p.id, acknowledged_at: p.id === ctx.me.id ? new Date().toISOString() : null }, onSaved); };
-  const name = ctx.person(t.owner_id)?.name || 'Unassigned';
+  const p = ctx.person(t.owner_id);
   return html`<span class="anchor" ref=${ref}>
-    <button class="chipbtn" disabled=${!can} onClick=${() => setOpen(!open)} title=${can ? 'Change owner' : ''}>${name}</button>
+    <button class="who-av" style=${'background:' + avColor(t.owner_id)} disabled=${!can} title=${(p?.name || 'Unassigned') + (can ? ', change owner' : '')} aria-label=${'Owner ' + (p?.name || 'unassigned')} onClick=${() => setOpen(!open)}>${initials(p?.name || '?')}</button>
     ${open ? html`<div class="pop" role="dialog" aria-label="Owner">
-      <input class="field" placeholder="Type a name" value=${q} aria-label="Search people" onInput=${(e) => { setQ(e.target.value); setI(0); }}
+      <input class="field" placeholder="Assign to…" value=${q} aria-label="Search people" onInput=${(e) => { setQ(e.target.value); setI(0); }}
         onKeyDown=${(e) => { if (e.key === 'ArrowDown') { e.preventDefault(); setI(Math.min(i + 1, opts.length - 1)); } else if (e.key === 'ArrowUp') { e.preventDefault(); setI(Math.max(i - 1, 0)); } else if (e.key === 'Enter') pick(opts[i]); }} />
-      <div class="opts" role="listbox">${opts.map((p, n) => html`<button class="opt" role="option" aria-selected=${n === i} onClick=${() => pick(p)}>${p.name}<span>${ctx.dept(ctx.members.find((m) => m.person_id === p.id)?.department_id)?.name || ''}</span></button>`)}</div>
+      <div class="opts" role="listbox">${opts.map((pp, n) => html`<button class="opt" role="option" aria-selected=${n === i} onClick=${() => pick(pp)}><${Avatar} ctx=${ctx} id=${pp.id} size=${22} />${pp.name}<span class="r">${ctx.dept(ctx.ownerDept(pp.id))?.name || ''}</span></button>`)}</div>
     </div>` : ''}</span>`;
 }
-function TitleCell({ ctx, t, onSaved }) {
-  const [v, setV] = useState(t.title);
-  useEffect(() => setV(t.title), [t.title]);
-  const commit = () => { const s = v.trim(); if (s && s !== t.title) ctx.save(t, { title: s }, onSaved); else setV(t.title); };
-  return html`<input class="cell-input" value=${v} disabled=${!ctx.canEdit(t)} aria-label="Task title" onInput=${(e) => setV(e.target.value)} onBlur=${commit} onKeyDown=${(e) => { if (e.key === 'Enter') e.target.blur(); if (e.key === 'Escape') { setV(t.title); e.target.blur(); } }} />`;
-}
-function UpdCell({ ctx, t, onSaved }) {
-  const [editing, setEditing] = useState(false);
-  const [v, setV] = useState('');
-  const post = async () => {
-    const body = v.trim(); setEditing(false); setV('');
-    if (!body) return;
-    const { error } = await sb.from('task_updates').insert({ task_id: t.id, author_id: ctx.me.id, body });
-    if (error) return ctx.setToast({ text: error.message });
-    onSaved?.(t.id); ctx.load();
-  };
-  if (editing) return html`<input class="cell-input" placeholder="Add an update, Enter to post" value=${v} ref=${(el) => el && !v && el.focus()} onInput=${(e) => setV(e.target.value)} onBlur=${post} onKeyDown=${(e) => { if (e.key === 'Enter') e.target.blur(); if (e.key === 'Escape') { setV(''); setEditing(false); } }} />`;
-  return html`<button class="updbtn" title=${t.last_update_body || 'Add an update'} onClick=${() => setEditing(true)}>${t.last_update_body ? `${t.last_update_body} · ${ago(t.last_update_at)}` : 'Add update'}</button>`;
-}
-function StatusSel({ ctx, t, onSaved }) {
-  return html`<select class="cell-sel" aria-label="Status" disabled=${!ctx.canEdit(t)} value=${t.status} onChange=${(e) => ctx.save(t, e.target.value === 'done' ? { status: 'done', completed_at: new Date().toISOString() } : { status: e.target.value, completed_at: null }, onSaved)}>
-    <option value="open">Open</option><option value="blocked">Blocked</option><option value="done">Done</option></select>`;
-}
-const useWide = () => {
-  const mq = '(min-width: 761px)';
-  const [w, setW] = useState(() => matchMedia(mq).matches);
-  useEffect(() => { const m = matchMedia(mq); const h = () => setW(m.matches); m.addEventListener('change', h); return () => m.removeEventListener('change', h); }, []);
-  return w;
-};
 
-/* ---------- grid ---------- */
-function Grid({ ctx, rows, groupKey, groupLabel, sel, toggle }) {
-  const [ticks, setTicks] = useState({});
-  const [closed, setClosed] = useState({});
-  const saved = (id) => { setTicks((x) => ({ ...x, [id]: 1 })); setTimeout(() => setTicks((x) => { const y = { ...x }; delete y[id]; return y; }), 1600); };
-  const groups = [];
-  if (groupKey) { const m = new Map(); rows.forEach((t) => { const k = groupKey(t) || ''; if (!m.has(k)) m.set(k, []); m.get(k).push(t); }); groups.push(...m.entries()); }
-  else groups.push(['', rows]);
-  const nav = (e) => {
-    if (!['ArrowUp', 'ArrowDown'].includes(e.key) || e.target.closest('.pop') || e.target.tagName === 'SELECT') return;
-    const td = e.target.closest('td'); const tr = td?.parentElement; if (!tr?.dataset.id) return;
-    const col = [...tr.children].indexOf(td);
-    let n = e.key === 'ArrowDown' ? tr.nextElementSibling : tr.previousElementSibling;
-    while (n && !n.dataset.id) n = e.key === 'ArrowDown' ? n.nextElementSibling : n.previousElementSibling;
-    const target = n?.children[col]?.querySelector('input, button, select');
-    if (target) { e.preventDefault(); target.focus(); }
-  };
-  const cols = 11;
-  return html`<div class="gridwrap"><table class="grid" onKeyDown=${nav}>
-    <thead><tr><th>${toggle ? html`<span class="sr">Select</span>` : ''}</th><th><span class="sr">Done</span></th><th>Task</th><th>Owner</th><th>Department</th><th>Task list</th><th>Priority</th><th>Deadline</th><th>Status</th><th>Latest update</th><th><span class="sr">Details</span></th></tr></thead>
-    <tbody>${groups.map(([k, items]) => html`
-      ${groupKey ? html`<tr class="gtitle" onClick=${() => setClosed((c) => ({ ...c, [k]: !c[k] }))}><td colspan=${cols}>${closed[k] ? '▸' : '▾'} ${groupLabel(k)}<span>${groupLabel.count ? groupLabel.count(k, items) : items.length}</span></td></tr>` : ''}
-      ${closed[k] ? '' : html`<${GridRows} ctx=${ctx} items=${items} sel=${sel} toggle=${toggle} ticks=${ticks} saved=${saved} cols=${cols} />`}`)}
-    </tbody></table></div>`;
-}
-function GridRows({ ctx, items, sel, toggle, ticks, saved, cols }) {
-  const [n, setN] = useState(60);
-  return html`${items.slice(0, n).map((t) => html`<${GridRow} key=${t.id} ctx=${ctx} t=${t} selected=${sel?.includes(t.id)} toggle=${toggle} tick=${ticks[t.id]} saved=${saved} />`)}
-    ${items.length > n ? html`<tr><td colspan=${cols}><button class="linkbtn" style="padding:6px" onClick=${() => setN(n + 200)}>Show ${Math.min(items.length - n, 200)} more of ${items.length - n}</button></td></tr>` : ''}`;
-}
-function GridRow({ ctx, t, selected, toggle, tick, saved }) {
-  const can = ctx.canEdit(t);
-  const lead = ctx.isAdmin || ctx.isHead(t.department_id);
-  const lists = ctx.lists.filter((l) => l.department_id === t.department_id);
-  return html`<tr class=${selected ? 'sel' : ''} data-id=${t.id}>
-    <td>${toggle ? html`<input type="checkbox" class="sel" style="margin:0" checked=${selected} onChange=${() => toggle(t.id)} aria-label=${'Select ' + t.title} />` : ''}</td>
-    <td><button class=${`ring ${t.priority || 'none'}${t.status === 'done' ? ' done' : ''}`} disabled=${!can} aria-label=${(t.status === 'done' ? 'Reopen: ' : 'Mark done: ') + t.title} onClick=${() => (t.status === 'done' ? ctx.reopen(t) : ctx.done(t))}></button></td>
-    <td class="title"><${TitleCell} ctx=${ctx} t=${t} onSaved=${saved} /></td>
-    <td><${OwnerPick} ctx=${ctx} t=${t} onSaved=${saved} /></td>
-    <td><select class="cell-sel" aria-label="Department" disabled=${!lead} value=${t.department_id} onChange=${(e) => ctx.save(t, { department_id: e.target.value, task_list_id: null }, saved)}>${ctx.depts.map((d) => html`<option value=${d.id}>${d.name}</option>`)}</select></td>
-    <td><select class="cell-sel" aria-label="Task list" disabled=${!can} value=${t.task_list_id || ''} onChange=${async (e) => { let v = e.target.value; if (v === '__new') { v = await ctx.createList(t.department_id); if (!v) { e.target.value = t.task_list_id || ''; return; } } ctx.save(t, { task_list_id: v || null }, saved); }}><option value="">None</option>${lists.map((l) => html`<option value=${l.id}>${l.name}</option>`)}${ctx.canManageLists(t.department_id) ? html`<option value="__new">+ New list…</option>` : ''}</select></td>
-    <td><${PriorityPill} ctx=${ctx} t=${t} onSaved=${saved} /></td>
-    <td><${DateChip} ctx=${ctx} t=${t} onSaved=${saved} /></td>
-    <td><${StatusSel} ctx=${ctx} t=${t} onSaved=${saved} /></td>
-    <td class="upd"><${UpdCell} ctx=${ctx} t=${t} onSaved=${saved} /></td>
-    <td style="white-space:nowrap"><span class="tick" aria-live="polite">${tick ? '✓' : ''}</span><button class="iconbtn" aria-label=${'Open details: ' + t.title} onClick=${() => ctx.openTask(t)}><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg></button></td>
-  </tr>`;
-}
-
-/* ---------- task row (lists) ---------- */
-function Row({ ctx, t, select, selected, showOwner = true, showDept = true }) {
-  const [upd, setUpd] = useState(null);
-  const meta = [];
-  if (showDept) meta.push(html`<span>${ctx.dept(t.department_id)?.name}</span>`);
-  if (t.task_list_id) meta.push(html`<span>${ctx.list(t.task_list_id)?.name}</span>`);
-  if (t.status === 'blocked') meta.push(html`<span class="tag grey">Blocked${t.blocked_on_person_id ? ` on ${first(ctx.person(t.blocked_on_person_id)?.name)}` : ''}</span>`);
-  if (t.slip_count >= 1) meta.push(html`<span class="tag sand">Moved ${t.slip_count}×</span>`);
-  if (!t.acknowledged_at && t.owner_id === ctx.me.id) meta.push(html`<span class="tag">New</span>`);
-  if (t.from_department_id) meta.push(html`<span class="tag">From ${ctx.dept(t.from_department_id)?.name}</span>`);
-  if (t.request_status === 'pending') meta.push(html`<span class="tag">Request</span>`);
-  if (t.is_private) meta.push(html`<span class="tag grey">Private</span>`);
-  const post = async () => {
-    const body = (upd || '').trim(); setUpd(null);
-    if (!body) return;
-    const { error } = await sb.from('task_updates').insert({ task_id: t.id, author_id: ctx.me.id, body });
-    if (error) return ctx.setToast({ text: error.message });
-    ctx.setToast({ text: 'Update posted' }); ctx.load();
-  };
-  const can = ctx.canEdit(t);
-  return html`<div class=${'row' + (t.status === 'done' ? ' isdone' : '')}>
-    ${select ? html`<input type="checkbox" class="sel" checked=${selected} onChange=${() => select(t.id)} aria-label=${'Select ' + t.title} />` : ''}
-    <button class=${`ring ${t.priority || 'none'}${t.status === 'done' ? ' done' : ''}`} disabled=${!can} aria-label=${(t.status === 'done' ? 'Reopen: ' : 'Mark done: ') + t.title} onClick=${() => (t.status === 'done' ? ctx.reopen(t) : ctx.done(t))}></button>
-    <div class="main">
-      <span class="title" onClick=${() => ctx.openTask(t)} role="button" tabindex="0" onKeyDown=${(e) => e.key === 'Enter' && ctx.openTask(t)}>${t.title}</span>
-      ${meta.length ? html`<span class="meta">${meta}</span>` : ''}
-      ${t.last_update_body ? html`<span class="meta">“${t.last_update_body.slice(0, 90)}${t.last_update_body.length > 90 ? '…' : ''}” ${ago(t.last_update_at)}</span>` : ''}
-      ${upd !== null ? html`<div class="inlineupd"><input class="field" placeholder="Add an update" value=${upd} ref=${(el) => el && !upd && el.focus()} onInput=${(e) => setUpd(e.target.value)} onKeyDown=${(e) => { if (e.key === 'Enter') post(); if (e.key === 'Escape') setUpd(null); }} /><button class="btn primary" onClick=${post}>Post</button></div>` : ''}
-    </div>
-    <div class="ctrls">
-      ${t.status !== 'done' && can ? html`<span class="hover">
-        <button class="btn quiet" style="height:28px;padding:0 8px" onClick=${() => setUpd('')}>Update</button>
-        <button class="btn quiet" style="height:28px;padding:0 8px" onClick=${() => ctx.update(t.id, { snoozed_until: addDays(today(), 1) }, 'Snoozed to tomorrow', { snoozed_until: null })}>Snooze</button>
-      </span>` : ''}
-      ${showOwner ? html`<${OwnerPick} ctx=${ctx} t=${t} />` : ''}
-      <${PriorityPill} ctx=${ctx} t=${t} />
-      <${DateChip} ctx=${ctx} t=${t} />
-    </div>
+/* ---------- hover preview ---------- */
+const peekCache = {};
+function Peek({ ctx, t }) {
+  const [ups, setUps] = useState(peekCache[t.id]);
+  useEffect(() => { if (!ups) sb.from('task_updates').select('body,created_at,author_id').eq('task_id', t.id).order('created_at', { ascending: false }).limit(2).then(({ data }) => { peekCache[t.id] = data || []; setUps(data || []); }); }, []);
+  return html`<div class="peek" role="tooltip">
+    <div><b style="font-weight:600">${t.title}</b></div>
+    <div class="m">${ctx.person(t.owner_id)?.name}, ${ctx.dept(t.department_id)?.name}${t.task_list_id ? `, ${ctx.list(t.task_list_id)?.name}` : ''}${t.due_date ? `, due ${fmtDate(t.due_date)}` : ''}${t.slip_count ? `, moved ${t.slip_count}×` : ''}</div>
+    ${t.status === 'blocked' && t.blocked_reason ? html`<div class="m">Blocked: ${t.blocked_reason}</div>` : ''}
+    ${ups === undefined ? html`<div class="m">Loading updates…</div>` : ups.length ? ups.map((u) => html`<div class="u"><b>${first(ctx.person(u.author_id)?.name)}</b> <span class="m">${ago(u.created_at)}</span><div>${u.body}</div></div>`) : html`<div class="m">No updates yet.</div>`}
+    ${t.notes && !t.notes.startsWith('Zoho priority') ? html`<div class="m">${t.notes.slice(0, 160)}</div>` : ''}
   </div>`;
 }
 
-function Limited({ items, render: r, step = 50 }) {
-  const [n, setN] = useState(step);
-  return html`${items.slice(0, n).map(r)}${items.length > n ? html`<div class="more"><button class="linkbtn" onClick=${() => setN(n + step * 2)}>Show ${Math.min(items.length - n, step * 2)} more of ${items.length - n}</button></div>` : ''}`;
+/* ---------- task row ---------- */
+function TRow({ ctx, t, sel, toggle, selecting, showList = true, showDept = false, dragIds }) {
+  const [peek, setPeek] = useState(false);
+  const timer = useRef();
+  const can = ctx.canEdit(t);
+  const tags = [];
+  if (showDept) tags.push(html`<span class="tag quiet"><span class="ddot" style=${'display:inline-block;margin-right:5px;background:' + ctx.deptColor(t.department_id)}></span>${ctx.dept(t.department_id)?.name}</span>`);
+  if (showList && t.task_list_id) tags.push(html`<span class="tag">${ctx.list(t.task_list_id)?.name}</span>`);
+  if (t.status === 'blocked') tags.push(html`<span class="tag warn">Blocked${t.blocked_on_person_id ? ` on ${first(ctx.person(t.blocked_on_person_id)?.name)}` : ''}</span>`);
+  if (t.slip_count >= 2) tags.push(html`<span class="tag warn">Moved ${t.slip_count}×</span>`);
+  if (!t.acknowledged_at && t.owner_id === ctx.me.id) tags.push(html`<span class="tag info">New</span>`);
+  if (t.request_status === 'pending') tags.push(html`<span class="tag info">Request</span>`);
+  if (t.from_department_id) tags.push(html`<span class="tag info">From ${ctx.dept(t.from_department_id)?.name}</span>`);
+  if (t.is_private) tags.push(html`<span class="tag quiet">Private</span>`);
+  const dragStart = (e) => { const ids = dragIds?.(t.id) || [t.id]; e.dataTransfer.setData('text/bs-task', ids.join(',')); e.dataTransfer.effectAllowed = 'move'; e.currentTarget.classList.add('dragging'); };
+  return html`<div class=${'trow' + (sel ? ' sel' : '') + (t.status === 'done' ? ' isdone' : '')} draggable=${can} onDragStart=${dragStart} onDragEnd=${(e) => e.currentTarget.classList.remove('dragging')}>
+    <span class="grip" aria-hidden="true" title="Drag to a list, a day or a department">⋮⋮</span>
+    ${toggle ? html`<input type="checkbox" class="cbox" checked=${sel} onChange=${() => toggle(t.id)} aria-label=${'Select ' + t.title} />` : ''}
+    <button class=${'ring' + (t.status === 'done' ? ' done' : t.status === 'blocked' ? ' blocked' : !t.priority ? ' none' : '')} disabled=${!can} aria-label=${(t.status === 'done' ? 'Reopen: ' : 'Mark done: ') + t.title} onClick=${() => (t.status === 'done' ? ctx.reopen(t) : ctx.done(t))}></button>
+    <div class="tmain">
+      <span class="ttitle" role="button" tabindex="0" onClick=${() => ctx.openTask(t)} onKeyDown=${(e) => e.key === 'Enter' && ctx.openTask(t)}
+        onMouseEnter=${() => { timer.current = setTimeout(() => setPeek(true), 550); }} onMouseLeave=${() => { clearTimeout(timer.current); setPeek(false); }}>${t.title}</span>
+      ${tags}
+    </div>
+    <div class="props">
+      <span class="updc" title=${t.last_update_body ? `Latest: ${t.last_update_body}` : 'No updates'}>${t.last_update_at ? html`${I.bubble}${ago(t.last_update_at).replace(' ago', '')}` : ''}</span>
+      <${Prio} ctx=${ctx} t=${t} />
+      <${DateChip} ctx=${ctx} t=${t} />
+      <${OwnerPick} ctx=${ctx} t=${t} />
+    </div>
+    ${peek ? html`<${Peek} ctx=${ctx} t=${t} />` : ''}
+  </div>`;
 }
 
-/* ---------- overview ---------- */
+/* ---------- grouped list with drop targets ---------- */
+function GroupHead({ label, icon, n, pct, hint, collapsed, onToggle, onDrop, onAdd }) {
+  const [over, dropProps] = useDrop(onDrop || (() => {}));
+  return html`<div class=${'ghead' + (over ? ' drop' : '')} onClick=${onToggle} ...${onDrop ? dropProps : {}}>
+    <span class=${'caret' + (collapsed ? '' : ' open')} style="display:inline-flex;color:var(--faint)">${I.caret}</span>
+    ${icon}<span class="name">${label}</span><span class="n">${n}</span>
+    ${pct != null ? html`<span class="prog" aria-hidden="true"><i style=${`width:${pct}%`}></i></span><span class="n">${pct}% this week</span>` : ''}
+    <span class="hint">${over ? 'Drop to move here' : hint || ''}</span>
+    ${onAdd ? html`<button class="iconbtn" aria-label=${'Add a task to ' + label} onClick=${(e) => { e.stopPropagation(); onAdd(); }}>${I.plus}</button>` : ''}
+  </div>`;
+}
+function Groups({ ctx, groups, sel, toggle, rowProps = {} }) {
+  const [closed, setClosed] = useState({});
+  const selecting = sel && sel.length > 0;
+  const dragIds = (id) => (sel && sel.includes(id) ? sel : [id]);
+  return html`<div class=${selecting ? 'selecting' : ''}>${groups.map((g) => html`<div key=${g.key}>
+    ${g.label != null ? html`<${GroupHead} ...${g} collapsed=${closed[g.key]} onToggle=${() => setClosed((c) => ({ ...c, [g.key]: !c[g.key] }))} />` : ''}
+    ${closed[g.key] ? '' : html`<${RowsLimited} ctx=${ctx} items=${g.items} sel=${sel} toggle=${toggle} dragIds=${dragIds} rowProps=${rowProps} />`}
+  </div>`)}</div>`;
+}
+function RowsLimited({ ctx, items, sel, toggle, dragIds, rowProps }) {
+  const [n, setN] = useState(40);
+  return html`${items.slice(0, n).map((t) => html`<${TRow} key=${t.id} ctx=${ctx} t=${t} sel=${sel?.includes(t.id)} toggle=${toggle} dragIds=${dragIds} ...${rowProps} />`)}
+    ${items.length > n ? html`<div class="more"><button class="linkbtn" onClick=${() => setN(n + 150)}>Show ${Math.min(items.length - n, 150)} more of ${items.length - n}</button></div>` : ''}`;
+}
+
+/* ---------- week strip ---------- */
+function WeekStrip({ ctx, tasks, day, setDay }) {
+  const ws = weekStart(), td = today();
+  const days = Array.from({ length: 7 }, (_, i) => addDays(ws, i));
+  return html`<section class="week" aria-label="This week">${days.map((d) => html`<${DayCell} ctx=${ctx} d=${d} td=${td} items=${tasks.filter((t) => t.due_date === d)} on=${day === d} onClick=${() => setDay(day === d ? null : d)} />`)}</section>`;
+}
+function DayCell({ ctx, d, td, items, on, onClick }) {
+  const [over, dropProps] = useDrop((ids) => ctx.moveTo(ids, { due_date: d }, `Due ${fmtDate(d)}`));
+  const bars = items.slice(0, 10).map((t) => t.status === 'done' ? ['14px', 'var(--done)'] : d < td ? ['10px', 'var(--late)'] : ['8px', 'var(--line)']);
+  return html`<button class=${'day' + (d === td ? ' today' : '') + (on ? ' on' : '') + (over ? ' drop' : '')} onClick=${onClick} aria-pressed=${on} aria-label=${`${fmtDate(d)}, ${items.length} tasks`} ...${dropProps}>
+    <span class="dh"><b>${dayName(d)} ${dayNum(d)}</b><span class="num">${items.length || ''}</span></span>
+    <span class="bars" aria-hidden="true">${bars.map(([h, c]) => html`<i style=${`height:${h};background:${c}`}></i>`)}</span>
+  </button>`;
+}
+
+/* ---------- floating bulk bar ---------- */
+function BulkBar({ ctx, sel, clear }) {
+  if (!sel.length) return '';
+  const apply = async (fields, msg) => { if (await ctx.update(sel, fields, `${msg} (${sel.length})`)) { clear(); ctx.load(); } };
+  return html`<div class="bulkbar" role="toolbar" aria-label="Selected tasks">
+    <b>${sel.length} selected</b>
+    <${BulkPop} label="Priority">${(close) => html`<${PrioritySlider} always value=${null} onChange=${(p) => { close(); apply({ priority: p }, `Set ${PRI[p]}`); }} />`}</${BulkPop}>
+    <${BulkPop} label="Deadline">${(close) => html`<div class="qchips">${[['Today', today()], ['Tomorrow', addDays(today(), 1)], ['Fri', parseQuick('fri')], ['Mon', nextDow(0)], ['+1 week', addDays(today(), 7)]].map(([l, d]) => html`<button class="qchip" onClick=${() => { close(); apply({ due_date: d }, `Due ${fmtDate(d)}`); }}>${l}</button>`)}</div><input type="date" class="field" aria-label="Pick a date" onChange=${(e) => { if (e.target.value) { close(); apply({ due_date: e.target.value }, `Due ${fmtDate(e.target.value)}`); } }} />`}</${BulkPop}>
+    <${BulkPop} label="Owner">${(close) => html`<div class="opts">${ctx.people.map((p) => html`<button class="opt" onClick=${() => { close(); apply({ owner_id: p.id, acknowledged_at: null }, `Assigned to ${first(p.name)}`); }}><${Avatar} ctx=${ctx} id=${p.id} size=${22} />${p.name}</button>`)}</div>`}</${BulkPop}>
+    <${BulkPop} label="Move">${(close) => html`<div class="opts">${ctx.depts.map((d) => html`<div><div class="opt" style="font-weight:600;cursor:default"><span class="ddot" style=${'background:' + ctx.deptColor(d.id)}></span>${d.name}<button class="linkbtn" style="margin-left:auto;font-size:12px" onClick=${() => { close(); apply({ department_id: d.id, task_list_id: null }, `Moved to ${d.name}`); }}>Move here</button></div>
+      ${ctx.lists.filter((l) => l.department_id === d.id).map((l) => html`<button class="opt" style="padding-left:24px" onClick=${() => { close(); apply({ department_id: d.id, task_list_id: l.id }, `Moved to ${l.name}`); }}><${LIcon} name=${l.name} sm />${l.name}</button>`)}</div>`)}</div>`}</${BulkPop}>
+    <span class="bb"><button onClick=${() => apply({ status: 'done', completed_at: new Date().toISOString() }, 'Closed')}>Close</button></span>
+    <span class="bb"><button onClick=${clear} aria-label="Clear selection">✕</button></span>
+  </div>`;
+}
+function BulkPop({ label, children }) {
+  const [open, setOpen, ref] = usePop();
+  return html`<span class="bb" ref=${ref}><button aria-expanded=${open} onClick=${() => setOpen(!open)}>${label}</button>${open ? html`<div class="pop" style="min-width:${label === 'Priority' ? 220 : 260}px">${children(() => setOpen(false))}</div>` : ''}</span>`;
+}
+
+/* ---------- All tasks ---------- */
+const STATUS_TABS = [['open', 'Open'], ['nodate', 'Needs date'], ['late', 'Late'], ['blocked', 'Blocked'], ['done', 'Done']];
+const byStatus = (t, s) => s === 'open' ? t.status !== 'done' : s === 'nodate' ? needsDate(t) : s === 'late' ? isLate(t) : s === 'blocked' ? t.status === 'blocked' : t.status === 'done';
+const sortTasks = (a, b, sort) => sort === 'priority' ? (a.priority || 'P9').localeCompare(b.priority || 'P9') || (a.due_date || '9').localeCompare(b.due_date || '9')
+  : sort === 'updated' ? (b.last_update_at || b.updated_at).localeCompare(a.last_update_at || a.updated_at)
+  : (a.due_date || '9').localeCompare(b.due_date || '9') || (a.priority || 'P9').localeCompare(b.priority || 'P9');
+
+function AllTasks({ ctx, route }) {
+  const [tab, setTab] = useState(route.status || 'open');
+  const [q, setQ] = useState(route.q || '');
+  const [group, setGroup] = useState('dept');
+  const [sort, setSort] = useState('due');
+  const [day, setDay] = useState(null);
+  const [sel, setSel] = useState([]);
+  useEffect(() => { setQ(route.q || ''); if (route.status) setTab(route.status); setSel([]); }, [route.q, route.status, route.pin]);
+  const f = parseQuery(q, ctx);
+  const qStatus = f.status;
+  const rows = ctx.tasks.filter((t) => (qStatus ? true : byStatus(t, tab)) && matchQuery(t, { ...f, status: f.status || (tab === 'done' ? 'done' : null) }, ctx) && (!day || t.due_date === day)).sort((a, b) => sortTasks(a, b, sort));
+  const counts = Object.fromEntries(STATUS_TABS.map(([k]) => [k, ctx.tasks.filter((t) => byStatus(t, k) && matchQuery(t, { ...f, status: k === 'done' ? 'done' : null }, ctx)).length]));
+  const toggle = (id) => setSel((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
+  const groups = [];
+  if (group === 'none') groups.push({ key: 'all', label: null, items: rows });
+  else {
+    const m = new Map();
+    rows.forEach((t) => { const k = group === 'dept' ? t.department_id : group === 'owner' ? t.owner_id : group === 'prio' ? (t.priority || 'none') : (t.task_list_id || 'none'); if (!m.has(k)) m.set(k, []); m.get(k).push(t); });
+    const keys = [...m.keys()].sort((a, b) => group === 'dept' ? (ctx.dept(a)?.sort_order ?? 99) - (ctx.dept(b)?.sort_order ?? 99) : group === 'prio' ? a.localeCompare(b) : m.get(b).length - m.get(a).length);
+    keys.forEach((k) => {
+      const items = m.get(k);
+      const g = { key: k, items, n: items.length };
+      if (group === 'dept') Object.assign(g, { label: ctx.dept(k)?.name, icon: html`<span class="ddot" style=${'background:' + ctx.deptColor(k)}></span>`, onDrop: (ids) => ctx.moveTo(ids, { department_id: k, task_list_id: null }, `Moved to ${ctx.dept(k)?.name}`), onAdd: () => ctx.newTask({ department_id: k }) });
+      if (group === 'owner') Object.assign(g, { label: ctx.person(k)?.name || 'Unassigned', icon: html`<${Avatar} ctx=${ctx} id=${k} size=${20} />`, onDrop: ctx.isAdmin ? (ids) => ctx.moveTo(ids, { owner_id: k, acknowledged_at: null }, `Assigned to ${first(ctx.person(k)?.name)}`) : null });
+      if (group === 'prio') Object.assign(g, { label: k === 'none' ? 'No priority' : PRI[k], icon: html`<span class=${'plabel ' + k} style="height:18px;padding:0 6px;font-size:10.5px">${k === 'none' ? '—' : k}</span>`, onDrop: k === 'none' ? null : (ids) => ctx.moveTo(ids, { priority: k }, `Set ${PRI[k]}`) });
+      if (group === 'list') Object.assign(g, { label: k === 'none' ? 'No list' : ctx.list(k)?.name, icon: k === 'none' ? '' : html`<${LIcon} name=${ctx.list(k)?.name} />`, hint: k === 'none' ? '' : ctx.dept(ctx.list(k)?.department_id)?.name });
+      groups.push(g);
+    });
+  }
+  setNav(groups.flatMap((g) => g.items));
+  const chips = [];
+  if (f.owner) chips.push(['Owner', ctx.person(f.owner)?.name]);
+  if (f.dept) chips.push(['Department', ctx.dept(f.dept)?.name]);
+  if (f.list) chips.push(['List', ctx.list(f.list)?.name]);
+  if (f.prio) chips.push(['Priority', PRI[f.prio]]);
+  if (f.status) chips.push(['Status', { late: 'Late', blocked: 'Blocked', done: 'Done', nodate: 'Needs date' }[f.status]]);
+  if (f.when) chips.push(['Due', { today: 'Today', tomorrow: 'Tomorrow', week: 'This week' }[f.when]]);
+  if (f.quiet) chips.push(['Updates', 'None in 7 days']);
+  if (day) chips.push(['Due', fmtDate(day)]);
+  const title = route.pin || 'All tasks';
+  return html`
+    <div class="topbar">
+      <h1>${route.pin ? html`<span class="ic" style="color:var(--muted)">${I.pin}</span>` : ''}${title}</h1>
+      <div class="tabs" role="tablist" aria-label="Views">${STATUS_TABS.map(([k, l]) => html`<button role="tab" class="tab" aria-selected=${!qStatus && tab === k} onClick=${() => { setTab(k); if (qStatus) setQ(q.replace(/\b(late|overdue|blocked|done|completed|no date|needs date|undated)\b/gi, '').trim()); }}>${l}<span>${counts[k]}</span></button>`)}</div>
+      <span class="grow"></span>
+      <button class="btn primary" onClick=${() => ctx.newTask({})}>${I.plus}New task</button>
+    </div>
+    <${WeekStrip} ctx=${ctx} tasks=${ctx.tasks.filter((t) => matchQuery(t, { ...f, status: null, when: null }, ctx) || t.status === 'done' && matchQuery(t, { ...f, status: 'done', when: null }, ctx))} day=${day} setDay=${setDay} />
+    <div class="filterbar">
+      <label class="nlsearch">${I.search}<span class="sr">Filter</span><input placeholder="Filter in plain words: vivek urgent this week, no update, resale…" value=${q} onInput=${(e) => setQ(e.target.value)} /></label>
+      ${chips.map(([k, v]) => html`<span class="fchip"><span>${k}</span><b>${v}</b><button aria-label=${'Remove ' + k} onClick=${() => { if (k === 'Due' && day) setDay(null); else setQ(''); }}>×</button></span>`)}
+      ${q ? html`<button class="addfilter" onClick=${() => { const n = prompt('Name this view', describeQuery(f, ctx)); if (n) { ctx.addPin(n.trim(), q); ctx.setToast({ text: `Pinned “${n.trim()}” to the sidebar` }); } }}>${I.pin}Pin view</button>` : ''}
+      ${route.pin ? html`<button class="addfilter" onClick=${() => { ctx.removePin(route.pin); location.hash = 'all'; }}>Unpin</button>` : ''}
+      <span class="grow" style="flex:1"></span>
+      <label class="ctl">Group <select value=${group} onChange=${(e) => setGroup(e.target.value)}><option value="dept">Department</option><option value="list">Task list</option><option value="owner">Person</option><option value="prio">Priority</option><option value="none">None</option></select></label>
+      <label class="ctl">Sort <select value=${sort} onChange=${(e) => setSort(e.target.value)}><option value="due">Deadline</option><option value="priority">Priority</option><option value="updated">Last update</option></select></label>
+    </div>
+    <div class="page">
+      ${rows.length ? html`<${Groups} ctx=${ctx} groups=${groups} sel=${sel} toggle=${toggle} rowProps=${{ showDept: group !== 'dept', showList: group !== 'list' }} />` : html`<p class="empty">No tasks match.</p>`}
+    </div>
+    <${BulkBar} ctx=${ctx} sel=${sel} clear=${() => setSel([])} />`;
+}
+
+/* ---------- Department ---------- */
+function Dept({ ctx, route }) {
+  const wide = useWide();
+  const choices = ctx.isAdmin ? ctx.depts : ctx.depts.filter((d) => ctx.myDepts.includes(d.id));
+  const id = route.dept && choices.some((d) => d.id === route.dept) ? route.dept : choices[0]?.id;
+  const listF = route.list || '';
+  const [tab, setTab] = useState('open');
+  const [day, setDay] = useState(null);
+  const [sel, setSel] = useState([]);
+  const [summary, setSummary] = useState(null);
+  const [suggest, setSuggest] = useState(null);
+  useEffect(() => { setSel([]); setDay(null); setSummary(null); }, [id, listF]);
+  if (!id) return html`<div class="topbar"><h1>Department</h1></div><p class="empty">You are not in a department yet.</p>`;
+  const d = ctx.dept(id);
+  const all = ctx.tasks.filter((t) => t.department_id === id);
+  const open = all.filter((t) => t.status !== 'done');
+  const inList = (t) => !listF || (listF === 'none' ? !t.task_list_id : t.task_list_id === listF);
+  const shown = all.filter((t) => byStatus(t, tab) && inList(t) && (!day || t.due_date === day)).sort((a, b) => sortTasks(a, b, 'due'));
+  const lists = ctx.lists.filter((l) => l.department_id === id);
+  const doneWeek = all.filter((t) => t.status === 'done' && t.completed_at?.slice(0, 10) >= weekStart());
+  const pctFor = (items, lid) => { const dn = doneWeek.filter((t) => (t.task_list_id || 'none') === lid).length; const due = items.filter((t) => t.due_date && t.due_date <= weekEnd()).length; return dn + due ? Math.round((dn / (dn + due)) * 100) : null; };
+  const groups = [];
+  if (listF) groups.push({ key: listF, label: null, items: shown });
+  else {
+    const m = new Map(lists.map((l) => [l.id, []]));
+    m.set('none', []);
+    shown.forEach((t) => m.get(t.task_list_id || 'none')?.push(t));
+    [...m.entries()].filter(([, items]) => items.length).sort((a, b) => (a[0] === 'none') - (b[0] === 'none') || b[1].length - a[1].length).forEach(([k, items]) => {
+      const name = k === 'none' ? 'No list' : ctx.list(k)?.name;
+      groups.push({ key: k, label: name, items, n: items.length, pct: k === 'none' ? null : pctFor(items, k), icon: k === 'none' ? '' : html`<${LIcon} name=${name} />`, hint: wide ? 'Drag tasks here to move them' : '',
+        onDrop: k === 'none' ? (ids) => ctx.moveTo(ids, { task_list_id: null }, 'Removed from list') : (ids) => ctx.moveTo(ids, { task_list_id: k }, `Moved to ${name}`),
+        onAdd: () => ctx.newTask({ department_id: id, task_list_id: k === 'none' ? '' : k }) });
+    });
+  }
+  setNav(groups.flatMap((g) => g.items));
+  const toggle = (tid) => setSel((s) => (s.includes(tid) ? s.filter((x) => x !== tid) : [...s, tid]));
+  const noList = open.filter((t) => !t.task_list_id).length;
+  const heads = ctx.members.filter((m) => m.department_id === id && m.is_head).map((m) => first(ctx.person(m.person_id)?.name));
+  const requests = open.filter((t) => t.from_department_id && !t.acknowledged_at);
+  const lead = ctx.canManageLists(id);
+  async function runSummary() {
+    setSummary({ loading: true });
+    const { data, error } = await sb.functions.invoke('ai', { body: { mode: 'summarise', department_id: id } });
+    setSummary(error || data?.error ? { error: data?.error || 'Could not summarise right now.' } : { lines: data.lines });
+  }
+  async function runSuggest() {
+    setSuggest({ loading: true });
+    const { data, error } = await sb.functions.invoke('ai', { body: { mode: 'suggest_lists', department_id: id } });
+    if (error || data?.error) { setSuggest(null); return ctx.setToast({ text: data?.error || 'Could not get suggestions right now.' }); }
+    if (!data.suggestions.length) { setSuggest(null); return ctx.setToast({ text: 'No confident suggestions. Try adding a few more lists.' }); }
+    setSuggest({ items: data.suggestions.map((s) => ({ ...s, on: true })) });
+  }
+  return html`
+    <div class="topbar">
+      <h1><span class="ddot" style=${`width:12px;height:12px;border-radius:3px;background:${ctx.deptColor(id)}`}></span>${listF && listF !== 'none' ? html`<a href=${'#dept?dept=' + id} style="color:var(--muted);text-decoration:none;font-weight:500">${d.name}</a><span style="color:var(--ghost)">/</span>${ctx.list(listF)?.name}` : d.name}</h1>
+      <span class="sub num">${open.length} open, ${open.filter(isLate).length} late${heads.length ? `, heads ${heads.join(' and ')}` : ''}</span>
+      <span class="grow"></span>
+      <button class="btn" onClick=${runSummary}>${I.spark}Summarise team</button>
+      <button class="btn primary" onClick=${() => ctx.newTask({ department_id: id, task_list_id: listF && listF !== 'none' ? listF : '' })}>${I.plus}New task</button>
+    </div>
+    ${summary ? html`<div class="summary" role="status"><div class="h"><span>${I.spark} ${d.name}, this week</span><button class="iconbtn" aria-label="Close summary" onClick=${() => setSummary(null)}>✕</button></div>
+      ${summary.loading ? html`<span class="muted">Reading tasks and updates…</span>` : summary.error ? html`<span class="err">${summary.error}</span>` : html`<ol>${summary.lines.map((l) => html`<li>${l}</li>`)}</ol>`}</div>` : ''}
+    <${WeekStrip} ctx=${ctx} tasks=${all.filter(inList)} day=${day} setDay=${setDay} />
+    ${lead && noList >= 3 && !listF && lists.length ? html`<div class="banner"><span>${I.spark}</span><span class="t"><b style="font-weight:600">${noList} tasks have no list.</b> Auto-sort suggests a list for each, from the title and similar tasks.</span><button class="btn dark" disabled=${suggest?.loading} onClick=${runSuggest}>${suggest?.loading ? 'Thinking…' : 'Review suggestions'}</button></div>` : ''}
+    <div class="mlists">
+      <button class="lp" aria-pressed=${!listF} onClick=${() => (location.hash = 'dept?dept=' + id)}>All lists</button>
+      ${lists.map((l) => html`<button class="lp" aria-pressed=${listF === l.id} onClick=${() => (location.hash = `dept?dept=${id}&list=${l.id}`)}>${l.name}</button>`)}
+    </div>
+    <div class="filterbar">
+      <div class="tabs" role="tablist">${[['open', 'Open'], ['late', 'Late'], ['blocked', 'Blocked'], ['nodate', 'Needs date'], ['done', 'Done']].map(([k, l]) => html`<button role="tab" class="tab" aria-selected=${tab === k} onClick=${() => setTab(k)}>${l}<span>${all.filter((t) => byStatus(t, k) && inList(t)).length}</span></button>`)}</div>
+      ${day ? html`<span class="fchip"><span>Due</span><b>${fmtDate(day)}</b><button aria-label="Clear day" onClick=${() => setDay(null)}>×</button></span>` : ''}
+    </div>
+    ${lead && requests.length ? html`<div style="padding:12px 28px 0"><div class="panel"><div class="ph"><h2>Requests from other teams</h2></div>${requests.map((t) => html`<${TRow} key=${t.id} ctx=${ctx} t=${t} />`)}</div></div>` : ''}
+    <div class="page">${shown.length ? html`<${Groups} ctx=${ctx} groups=${groups} sel=${sel} toggle=${toggle} rowProps=${{ showList: !!listF ? false : false }} />` : html`<p class="empty">No tasks here.</p>`}</div>
+    <${BulkBar} ctx=${ctx} sel=${sel} clear=${() => setSel([])} />
+    ${suggest?.items ? html`<${SuggestSheet} ctx=${ctx} deptId=${id} items=${suggest.items} close=${() => setSuggest(null)} />` : ''}`;
+}
+function SuggestSheet({ ctx, deptId, items: init, close }) {
+  const [items, setItems] = useState(init);
+  const lists = ctx.lists.filter((l) => l.department_id === deptId);
+  const on = items.filter((i) => i.on);
+  async function apply() {
+    const byList = {};
+    on.forEach((i) => { (byList[i.list_id] ||= []).push(i.task_id); });
+    for (const [lid, ids] of Object.entries(byList)) await sb.from('tasks').update({ task_list_id: lid }).in('id', ids);
+    ctx.setToast({ text: `${on.length} tasks filed` }); ctx.load(); close();
+  }
+  return html`<div class="scrim" onClick=${close}><div class="sheet wide" role="dialog" aria-modal="true" aria-label="Auto-sort suggestions" onClick=${(e) => e.stopPropagation()}>
+    <div class="top"><b style="font-size:16px;font-weight:600">${I.spark} Suggested lists</b><button class="btn ghost" onClick=${close}>Close</button></div>
+    <p class="note">Untick anything that looks wrong, or pick another list. Nothing changes until you apply.</p>
+    <div>${items.map((it, n) => { const t = ctx.tasks.find((x) => x.id === it.task_id); return t ? html`<div class="suggrow">
+      <input type="checkbox" class="cbox" style="opacity:1" checked=${it.on} aria-label=${'Apply suggestion for ' + t.title} onChange=${() => setItems(items.map((x, j) => (j === n ? { ...x, on: !x.on } : x)))} />
+      <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.title}</span>
+      <select class="field" aria-label="List" value=${it.list_id} onChange=${(e) => setItems(items.map((x, j) => (j === n ? { ...x, list_id: e.target.value } : x)))}>${lists.map((l) => html`<option value=${l.id} selected=${l.id === it.list_id}>${l.name}</option>`)}</select>
+    </div>` : ''; })}</div>
+    <div class="actions"><button class="btn primary big" disabled=${!on.length} onClick=${apply}>File ${on.length} tasks</button><button class="btn ghost big" onClick=${close}>Cancel</button></div>
+  </div></div>`;
+}
+
+/* ---------- My tasks ---------- */
+function Mine({ ctx }) {
+  const [day, setDay] = useState(null);
+  const td = today(), we = weekEnd();
+  const mine = ctx.mine();
+  const open = mine.filter((t) => t.status !== 'done' && !(t.snoozed_until && t.snoozed_until > td) && (!day || t.due_date === day));
+  const approvals = ctx.isAdmin ? [] : ctx.dcr.filter((r) => { const t = ctx.tasks.find((x) => x.id === r.task_id); return t && ctx.canDecide(t); });
+  const waiting = ctx.open().filter((t) => t.blocked_on_person_id === ctx.me.id);
+  const sorted = (a) => a.sort((x, y) => sortTasks(x, y, 'due'));
+  const groups = [
+    { key: 'w', label: 'Waiting on you', items: waiting },
+    { key: 'o', label: 'Overdue', items: sorted(open.filter((t) => t.due_date && t.due_date < td)) },
+    { key: 't', label: 'Today', items: sorted(open.filter((t) => t.due_date === td)) },
+    { key: 'k', label: 'This week', items: sorted(open.filter((t) => t.due_date > td && t.due_date <= we)) },
+    { key: 'l', label: 'Later', items: sorted(open.filter((t) => t.due_date > we)) },
+    { key: 'n', label: 'Needs priority and date', items: sorted(open.filter((t) => !t.due_date)) },
+  ].filter((g) => g.items.length).map((g) => ({ ...g, n: g.items.length }));
+  setNav(groups.flatMap((g) => g.items));
+  return html`
+    <div class="topbar"><h1>My tasks</h1><span class="sub num">${open.length} open, ${open.filter(isLate).length} late</span><span class="grow"></span><button class="btn primary" onClick=${() => ctx.newTask({ owner_id: ctx.me.id })}>${I.plus}New task</button></div>
+    <${WeekStrip} ctx=${ctx} tasks=${mine} day=${day} setDay=${setDay} />
+    ${approvals.length ? html`<div style="padding:0 28px 12px"><div class="panel"><div class="ph"><h2>Needs your approval</h2></div>${approvals.map((r) => { const t = ctx.tasks.find((x) => x.id === r.task_id); return html`<div class="need"><span class="k">Date change</span><span class="t"><span onClick=${() => ctx.openTask(t)}>${t.title} → ${shortDue(r.proposed_due)}</span><span>${first(ctx.person(r.requested_by)?.name)}${r.reason ? ', ' + r.reason : ''}</span></span><span class="na"><button class="btn primary" onClick=${() => ctx.decideDate(r, true)}>Approve</button><button class="btn ghost" onClick=${() => ctx.decideDate(r, false)}>Reject</button></span></div>`; })}</div></div>` : ''}
+    <div class="page">${groups.length ? html`<${Groups} ctx=${ctx} groups=${groups} rowProps=${{ showDept: true }} />` : html`<p class="empty">Nothing open${day ? ' that day' : ''}. Add a task below.</p>`}</div>`;
+}
+
+/* ---------- Overview ---------- */
 function OtherDate({ ctx, req }) {
   const [open, setOpen, ref] = usePop();
-  return html`<span class="anchor" ref=${ref}><button class="btn quiet" onClick=${() => setOpen(!open)}>Other date</button>
-    ${open ? html`<div class="pop" style="right:0;left:auto"><span class="note">Approve with this date instead</span><input type="date" class="field" min=${today()} onChange=${(e) => { if (e.target.value) { setOpen(false); ctx.approveOther(req, e.target.value); } }} /></div>` : ''}</span>`;
+  return html`<span class="anchor" ref=${ref}><button class="btn ghost" onClick=${() => setOpen(!open)}>Other date</button>${open ? html`<div class="pop"><span class="note">Approve with this date instead</span><input type="date" class="field" min=${today()} onChange=${(e) => { if (e.target.value) { setOpen(false); ctx.approveOther(req, e.target.value); } }} /></div>` : ''}</span>`;
 }
 function NeedActions({ ctx, n }) {
   const t = n.t;
-  if (n.req) return html`<button class="btn primary" onClick=${() => ctx.decideDate(n.req, true)}>Approve</button><button class="btn quiet" onClick=${() => ctx.decideDate(n.req, false)}>Reject</button><${OtherDate} ctx=${ctx} req=${n.req} />`;
-  if (n.request) return html`<button class="btn primary" onClick=${() => ctx.decideRequest(t, true)}>Accept</button><button class="btn quiet" onClick=${() => ctx.openTask(t)}>Reassign</button>`;
-  const open = html`<button class="btn quiet" onClick=${() => ctx.openTask(t)}>Open</button>`;
-  if (n.kind === 'P1 late') return html`<${DateChip} ctx=${ctx} t=${t} /><button class="btn" onClick=${() => ctx.nudge(t, 'nudge')}>Nudge</button>`;
-  if (n.kind === 'Blocked') return html`${t.blocked_on_person_id ? html`<button class="btn" onClick=${() => ctx.nudge(t, 'nudge', 'blocker')}>Nudge ${first(ctx.person(t.blocked_on_person_id)?.name)}</button>` : ''}${open}`;
-  if (n.kind === 'Quiet') return html`<button class="btn" onClick=${() => ctx.nudge(t, 'ask')}>Ask for update</button>${open}`;
-  if (n.kind === 'Not seen') return html`<button class="btn" onClick=${() => ctx.nudge(t, 'nudge')}>Nudge</button>${open}`;
-  return html`<${DateChip} ctx=${ctx} t=${t} />${open}`;
+  const openB = html`<button class="btn ghost" onClick=${() => ctx.openTask(t)}>Open</button>`;
+  if (n.req) return html`<button class="btn primary" onClick=${() => ctx.decideDate(n.req, true)}>Approve</button><button class="btn ghost" onClick=${() => ctx.decideDate(n.req, false)}>Reject</button><${OtherDate} ctx=${ctx} req=${n.req} />`;
+  if (n.request) return html`<button class="btn primary" onClick=${() => ctx.decideRequest(t, true)}>Accept</button><button class="btn ghost" onClick=${() => ctx.openTask(t)}>Reassign</button>`;
+  if (n.kind === 'Urgent, late') return html`<${DateChip} ctx=${ctx} t=${t} /><button class="btn" onClick=${() => ctx.nudge(t, 'nudge')}>Nudge</button>`;
+  if (n.kind === 'Blocked') return html`${t.blocked_on_person_id ? html`<button class="btn" onClick=${() => ctx.nudge(t, 'nudge', 'blocker')}>Nudge ${first(ctx.person(t.blocked_on_person_id)?.name)}</button>` : ''}${openB}`;
+  if (n.kind === 'Quiet') return html`<button class="btn" onClick=${() => ctx.nudge(t, 'ask')}>Ask for update</button>${openB}`;
+  if (n.kind === 'Not seen') return html`<button class="btn" onClick=${() => ctx.nudge(t, 'nudge')}>Nudge</button>${openB}`;
+  return html`<${DateChip} ctx=${ctx} t=${t} />${openB}`;
 }
 function Overview({ ctx }) {
   const [filter, setFilter] = useState('needs');
   const [team, setTeam] = useState(null);
+  const [summary, setSummary] = useState(null);
   const td = today(), ws = weekStart(), we = weekEnd();
   const needs = ctx.needsYou();
   const open = ctx.open();
@@ -477,13 +871,11 @@ function Overview({ ctx }) {
   const teams = ctx.depts.map((d) => {
     const o = open.filter((t) => t.department_id === d.id);
     const late = o.filter(isLate);
-    const lateP1 = late.filter((t) => t.priority === 'P1');
     const dn = doneWeek.filter((t) => t.department_id === d.id).length;
     const due = dueWeek.filter((t) => t.department_id === d.id).length;
     const pct = dn + due ? Math.round((dn / (dn + due)) * 100) : 100;
-    const st = lateP1.length >= 2 || late.length >= 5 ? ['Needs help', 'help', 'var(--help)'] : late.length ? ['Behind', 'behind', 'var(--behind)'] : ['On track', 'ok', 'var(--ok)'];
-    const attention = o.filter((t) => isLate(t) || t.status === 'blocked').sort((a, b) => (a.due_date || '9').localeCompare(b.due_date || '9'));
-    return { d, open: o.length, pct, st, attention, rank: st[1] === 'help' ? 0 : st[1] === 'behind' ? 1 : 2 };
+    const st = late.filter((t) => t.priority === 'P1').length >= 2 || late.length >= 5 ? ['Needs help', 'help', 'var(--p1)'] : late.length ? ['Behind', 'behind', '#D9A441'] : ['On track', 'ok', 'var(--done)'];
+    return { d, open: o.length, pct, st, attention: o.filter((t) => isLate(t) || t.status === 'blocked').sort((a, b) => sortTasks(a, b, 'due')), rank: st[1] === 'help' ? 0 : st[1] === 'behind' ? 1 : 2 };
   }).sort((a, b) => a.rank - b.rank || b.open - a.open);
   const since = useMemo(() => {
     const last = Number(localStorage.getItem('bs_last_seen') || 0);
@@ -493,186 +885,50 @@ function Overview({ ctx }) {
   }, []);
   const list = filter === 'needs' ? null : filter === 'done' ? doneWeek : filter === 'due' ? dueWeek : blocked;
   setNav(list || needs.map((n) => n.t));
+  async function runSummary() {
+    setSummary({ loading: true });
+    const { data, error } = await sb.functions.invoke('ai', { body: { mode: 'summarise' } });
+    setSummary(error || data?.error ? { error: data?.error || 'Could not summarise right now.' } : { lines: data.lines });
+  }
   return html`
-    <div class="head"><h1>Overview</h1><span class="sub">${fmtDate(td)}</span></div>
+    <div class="topbar"><h1>Overview</h1><span class="sub">${fmtDate(td)}</span><span class="grow"></span><button class="btn" onClick=${runSummary}>${I.spark}Summarise this week</button></div>
+    ${summary ? html`<div class="summary" role="status"><div class="h"><span>${I.spark} All departments, this week</span><button class="iconbtn" aria-label="Close summary" onClick=${() => setSummary(null)}>✕</button></div>
+      ${summary.loading ? html`<span class="muted">Reading tasks and updates…</span>` : summary.error ? html`<span class="err">${summary.error}</span>` : html`<ol>${summary.lines.map((l) => html`<li>${l}</li>`)}</ol>`}</div>` : ''}
     <div class="figs" role="tablist">${figs.map(([k, n, l]) => html`<button role="tab" aria-selected=${filter === k} class=${'fig' + (filter === k ? ' on' : '')} onClick=${() => setFilter(k)}><b>${n}</b><span>${l}</span></button>`)}</div>
-    <div class="cols">
-      <div>
-        ${filter === 'needs' ? html`<section class="panel">
-          <div class="ph"><h2>Needs you</h2>${undated.length ? html`<a href="#all?status=nodate" class="linkbtn">${undated.length} need priority and date</a>` : ''}</div>
-          ${needs.length ? html`<${Limited} items=${needs} step=${15} render=${(n) => html`<div class="need" key=${n.key}>
-            <span class="k">${n.kind}</span>
-            <span class="t"><span onClick=${() => ctx.openTask(n.t)}>${n.title}</span><span>${n.who}</span></span>
-            <span class="na"><${NeedActions} ctx=${ctx} n=${n} /></span>
-          </div>`} />` : html`<p class="empty">Nothing needs you right now.</p>`}
-        </section>` : html`<section class="panel"><div class="ph"><h2>${figs.find((f) => f[0] === filter)[2]}</h2></div>
-          ${list.length ? html`<${Limited} items=${list} render=${(t) => html`<${Row} key=${t.id} ctx=${ctx} t=${t} />`} />` : html`<p class="empty">None.</p>`}</section>`}
+    <div class="cols page">
+      <div class="panel">
+        ${filter === 'needs' ? html`<div class="ph"><h2>Needs you</h2>${undated.length ? html`<a href="#all?status=nodate" class="linkbtn" style="font-size:13px">${undated.length} need priority and date</a>` : ''}</div>
+          ${needs.length ? needs.slice(0, 30).map((n) => html`<div class="need" key=${n.key}><span class="k">${n.kind}</span><span class="t"><span onClick=${() => ctx.openTask(n.t)}>${n.title}</span><span>${n.who}</span></span><span class="na"><${NeedActions} ctx=${ctx} n=${n} /></span></div>`) : html`<p class="empty">Nothing needs you right now.</p>`}`
+        : html`<div class="ph"><h2>${figs.find((x) => x[0] === filter)[2]}</h2></div>${list.length ? list.slice(0, 60).map((t) => html`<${TRow} key=${t.id} ctx=${ctx} t=${t} showDept />`) : html`<p class="empty">None.</p>`}`}
       </div>
-      <div>
-        <section class="panel"><div class="ph"><h2>Teams</h2></div>
+      <div style="display:flex;flex-direction:column;gap:16px">
+        <div class="panel"><div class="ph"><h2>Teams</h2></div>
           ${teams.map(({ d, open: o, pct, st, attention }) => html`
             <button class="team" aria-expanded=${team === d.id} onClick=${() => setTeam(team === d.id ? null : d.id)}>
-              <span>${team === d.id ? '▾' : '▸'} ${d.name}</span>
+              <span style="display:flex;align-items:center;gap:8px"><span class="ddot" style=${'background:' + ctx.deptColor(d.id)}></span>${d.name}</span>
               <span class="bar" aria-hidden="true"><i style=${`width:${pct}%;background:${st[2]}`}></i></span>
-              <span class="num" style="text-align:right;color:var(--muted);font-size:14px">${o}</span>
-              <span class=${'st-' + st[1]} style="text-align:right;font-size:14px">${st[0]}</span>
+              <span class="num" style="text-align:right;color:var(--muted);font-size:13px">${o}</span>
+              <span class=${'st-' + st[1]} style="text-align:right;font-size:13px">${st[0]}</span>
             </button>
-            ${team === d.id ? html`<div class="teamx">
-              ${attention.length ? attention.slice(0, 8).map((t) => html`<${Row} key=${t.id} ctx=${ctx} t=${t} showDept=${false} />`) : html`<p class="empty" style="padding:6px 0">Nothing late or blocked.</p>`}
-              <a class="linkbtn" href=${'#dept?dept=' + d.id}>Open ${d.name}${attention.length > 8 ? ` (${attention.length - 8} more late or blocked)` : ''}</a>
-            </div>` : ''}`)}
-        </section>
-        ${since.last ? html`<section class="panel"><div class="ph"><h2>Since you last looked</h2><span class="note">${ago(new Date(since.last).toISOString())}</span></div>
-          ${since.items.length ? since.items.map((t) => html`<div class="need" style="cursor:pointer" onClick=${() => ctx.openTask(t)}><span class="k">${new Date(t.updated_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</span><span class="t"><span>${t.title}</span><span>${t.status === 'done' ? 'Done' : t.status === 'blocked' ? 'Blocked' : 'Updated'}, ${first(ctx.person(t.owner_id)?.name)}</span></span></div>`) : html`<p class="empty">No changes.</p>`}
-        </section>` : ''}
+            ${team === d.id ? html`<div class="teamx">${attention.length ? attention.slice(0, 8).map((t) => html`<${TRow} key=${t.id} ctx=${ctx} t=${t} />`) : html`<p class="empty" style="padding:10px 16px">Nothing late or blocked.</p>`}
+              <div style="padding:8px 16px"><a class="linkbtn" href=${'#dept?dept=' + d.id}>Open ${d.name}</a></div></div>` : ''}`)}
+        </div>
+        ${since.last ? html`<div class="panel"><div class="ph"><h2>Since you last looked</h2><span class="note">${ago(new Date(since.last).toISOString())}</span></div>
+          ${since.items.length ? since.items.map((t) => html`<div class="need" style="cursor:pointer" onClick=${() => ctx.openTask(t)}><span class="k">${new Date(t.updated_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</span><span class="t"><span>${t.title}</span><span>${t.status === 'done' ? 'Done' : t.status === 'blocked' ? 'Blocked' : 'Updated'}, ${first(ctx.person(t.owner_id)?.name)}</span></span></div>`) : html`<p class="empty">No changes.</p>`}</div>` : ''}
       </div>
     </div>`;
 }
 
-/* ---------- my tasks ---------- */
-function Mine({ ctx }) {
-  const td = today(), we = weekEnd();
-  const mine = ctx.mine();
-  const open = mine.filter((t) => t.status !== 'done' && !(t.snoozed_until && t.snoozed_until > td));
-  const approvals = ctx.dcr.filter((r) => { const t = ctx.tasks.find((x) => x.id === r.task_id); return t && ctx.canDecide(t) && !ctx.isAdmin; });
-  const waiting = ctx.open().filter((t) => t.blocked_on_person_id === ctx.me.id);
-  const groups = [
-    ['Overdue', open.filter((t) => t.due_date && t.due_date < td)],
-    ['Today', open.filter((t) => t.due_date === td)],
-    ['This week', open.filter((t) => t.due_date > td && t.due_date <= we)],
-    ['Later', open.filter((t) => t.due_date > we)],
-    ['Needs priority and date', open.filter((t) => !t.due_date)],
-  ];
-  const sort = (a) => a.sort((x, y) => (x.due_date || '9').localeCompare(y.due_date || '9') || (x.priority || 'P9').localeCompare(y.priority || 'P9'));
-  const doneRecent = mine.filter((t) => t.status === 'done').sort((a, b) => b.completed_at.localeCompare(a.completed_at));
-  const [showDone, setShowDone] = useState(false);
-  setNav([...waiting, ...groups.flatMap(([, items]) => sort(items))]);
-  return html`
-    <div class="head"><h1>My tasks</h1><span class="sub num">${open.length} open, ${open.filter(isLate).length} late</span></div>
-    ${approvals.length ? html`<section class="panel"><div class="ph"><h2>Needs your approval</h2></div>${approvals.map((r) => { const t = ctx.tasks.find((x) => x.id === r.task_id); return html`<div class="need"><span class="k">Date change</span><span class="t"><span onClick=${() => ctx.openTask(t)}>${t.title} → ${shortDue(r.proposed_due)}</span><span>${first(ctx.person(r.requested_by)?.name)}${r.reason ? ', ' + r.reason : ''}</span></span><button class="btn primary" onClick=${() => ctx.decideDate(r, true)}>Approve</button><button class="btn quiet" onClick=${() => ctx.decideDate(r, false)}>Reject</button></div>`; })}</section>` : ''}
-    ${waiting.length ? html`<h2 class="sec">Waiting on you <span class="n">${waiting.length}</span></h2><div class="rows">${waiting.map((t) => html`<${Row} key=${t.id} ctx=${ctx} t=${t} />`)}</div>` : ''}
-    ${groups.map(([g, items]) => items.length ? html`<h2 class="sec">${g} <span class="n">${items.length}</span></h2><div class="rows"><${Limited} items=${sort(items)} render=${(t) => html`<${Row} key=${t.id} ctx=${ctx} t=${t} showOwner=${false} />`} /></div>` : '')}
-    ${!open.length ? html`<p class="empty">Nothing open. Add a task below.</p>` : ''}
-    ${doneRecent.length ? html`<h2 class="sec"><button class="linkbtn" onClick=${() => setShowDone(!showDone)}>${showDone ? 'Hide' : 'Show'} done in the last 14 days (${doneRecent.length})</button></h2>${showDone ? html`<div class="rows">${doneRecent.map((t) => html`<${Row} key=${t.id} ctx=${ctx} t=${t} showOwner=${false} />`)}</div>` : ''}` : ''}`;
-}
-
-/* ---------- department ---------- */
-function Dept({ ctx, route }) {
-  const wide = useWide();
-  const choices = ctx.isAdmin ? ctx.depts : ctx.depts.filter((d) => ctx.myDepts.includes(d.id));
-  const id = route.dept && choices.some((d) => d.id === route.dept) ? route.dept : choices[0]?.id;
-  const [group, setGroup] = useState('list');
-  const [f, setF] = useState('open');
-  const [listF, setListF] = useState('');
-  useEffect(() => setListF(''), [id]);
-  if (!id) return html`<div class="head"><h1>Department</h1></div><p class="empty">You are not in a department yet.</p>`;
-  const all = ctx.tasks.filter((t) => t.department_id === id);
-  const open = all.filter((t) => t.status !== 'done');
-  const byStatus = f === 'open' ? open : f === 'late' ? open.filter(isLate) : f === 'blocked' ? open.filter((t) => t.status === 'blocked') : f === 'nodate' ? open.filter(needsDate) : all.filter((t) => t.status === 'done' && t.completed_at?.slice(0, 10) >= weekStart());
-  const deptLists = ctx.lists.filter((l) => l.department_id === id);
-  const countIn = (lid) => byStatus.filter((t) => (t.task_list_id || '') === lid).length;
-  const pills = [...deptLists.map((l) => ({ id: l.id, name: l.name, n: countIn(l.id) })), ...(countIn('') ? [{ id: '', name: 'No list', n: countIn(''), none: true }] : [])]
-    .sort((a, b) => b.n - a.n || a.name.localeCompare(b.name));
-  const shown = byStatus.filter((t) => listF === '' || (listF === '__none' ? !t.task_list_id : t.task_list_id === listF))
-    .sort((a, b) => (a.due_date || '9').localeCompare(b.due_date || '9'));
-  const requests = open.filter((t) => t.from_department_id && !t.acknowledged_at);
-  const lead = ctx.canManageLists(id);
-  const effGroup = listF ? 'owner' : group;
-  const keyOf = (t) => (effGroup === 'owner' ? t.owner_id : t.task_list_id || '');
-  const label = (k) => (effGroup === 'owner' ? ctx.person(k)?.name || 'Unassigned' : k ? ctx.list(k)?.name : 'No list');
-  label.count = (k, items) => (effGroup === 'owner' && !ctx.canSeeStats(k) ? '' : `${items.length}${f === 'open' ? `, ${items.filter(isLate).length} late` : ''}`);
-  const groups = {};
-  shown.forEach((t) => (groups[keyOf(t)] ||= []).push(t));
-  const order = Object.keys(groups).sort((a, b) => groups[b].length - groups[a].length);
-  const sorted = order.flatMap((k) => groups[k]);
-  setNav(sorted);
-  return html`
-    <div class="head">
-      <select class="field" style="font-size:20px;font-weight:600;height:44px;border:none;background:transparent;padding:0;letter-spacing:-0.02em" aria-label="Department" value=${id} onChange=${(e) => (location.hash = 'dept?dept=' + e.target.value)}>
-        ${choices.map((d) => html`<option value=${d.id}>${d.name}</option>`)}
-      </select>
-      <span class="sub num">${open.length} open, ${open.filter(isLate).length} late, ${open.filter((t) => t.status === 'blocked').length} blocked</span>
-    </div>
-    <div class="lists" role="tablist" aria-label="Task lists">
-      <button role="tab" class="listpill" aria-selected=${listF === ''} onClick=${() => setListF('')}>All lists <span>${byStatus.length}</span></button>
-      ${pills.map((p) => html`<button role="tab" class="listpill" aria-selected=${listF === (p.none ? '__none' : p.id)} onClick=${() => setListF(p.none ? '__none' : p.id)}>${p.name} <span>${p.n}</span></button>`)}
-      ${lead ? html`<button class="listpill add" onClick=${async () => { const nid = await ctx.createList(id); if (nid) setListF(nid); }}>+ New list</button>` : ''}
-    </div>
-    <div class="filters">
-      <div class="chips">${[['open', 'Open'], ['late', 'Late'], ['blocked', 'Blocked'], ['nodate', 'No date'], ['done', 'Done this week']].map(([k, l]) => html`<button class="chip" aria-pressed=${f === k} onClick=${() => setF(k)}>${l}</button>`)}</div>
-      <div style="flex:1"></div>
-      ${!listF ? html`<div class="chips">${[['list', 'By task list'], ['owner', 'By person']].map(([k, l]) => html`<button class="chip" aria-pressed=${group === k} onClick=${() => setGroup(k)}>${l}</button>`)}</div>` : ''}
-    </div>
-    ${lead && requests.length ? html`<section class="panel"><div class="ph"><h2>Requests from other teams</h2></div>${requests.map((t) => html`<${Row} key=${t.id} ctx=${ctx} t=${t} showDept=${false} />`)}</section>` : ''}
-    ${!shown.length ? html`<p class="empty">No tasks here.${listF && listF !== '__none' ? ' Add one below; it goes into this department.' : ''}</p>`
-      : wide ? html`<${Grid} ctx=${ctx} rows=${sorted} groupKey=${keyOf} groupLabel=${label} /><p class="kbd">Click any cell to edit. Arrow keys move between rows. On priority, press 1, 2 or 3. Dates accept fri, +7 or 12 nov.</p>`
-      : order.map((k) => html`<div class="gh">${label(k)}<span class="num">${label.count(k, groups[k])}</span></div>
-        <div class="rows"><${Limited} items=${groups[k]} step=${8} render=${(t) => html`<${Row} key=${t.id} ctx=${ctx} t=${t} showDept=${false} showOwner=${effGroup !== 'owner'} />`} /></div>`)}`;
-}
-
-/* ---------- all tasks ---------- */
-function AllTasks({ ctx, route }) {
-  const wide = useWide();
-  const [q, setQ] = useState('');
-  const [dept, setDept] = useState('');
-  const [owner, setOwner] = useState('');
-  const [prio, setPrio] = useState('');
-  const [status, setStatus] = useState(route.status || 'open');
-  const [grp, setGrp] = useState('dept');
-  const [sel, setSel] = useState([]);
-  useEffect(() => { if (route.status) setStatus(route.status); }, [route.status]);
-  const td = today();
-  const rows = ctx.tasks.filter((t) => {
-    if (status === 'open' && t.status === 'done') return false;
-    if (status === 'late' && !isLate(t)) return false;
-    if (status === 'blocked' && t.status !== 'blocked') return false;
-    if (status === 'nodate' && !needsDate(t)) return false;
-    if (status === 'done' && t.status !== 'done') return false;
-    if (dept && t.department_id !== dept) return false;
-    if (owner && t.owner_id !== owner) return false;
-    if (prio && (prio === 'none' ? t.priority : t.priority !== prio)) return false;
-    if (q) { const s = q.toLowerCase(); if (!(`${t.title} ${t.notes || ''} ${t.last_update_body || ''} ${ctx.person(t.owner_id)?.name} ${ctx.list(t.task_list_id)?.name || ''}`.toLowerCase().includes(s))) return false; }
-    return true;
-  }).sort((a, b) => (ctx.dept(a.department_id)?.sort_order ?? 0) - (ctx.dept(b.department_id)?.sort_order ?? 0) || (a.due_date || '9').localeCompare(b.due_date || '9'));
-  const toggle = (id) => setSel((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
-  const allOn = rows.length && rows.every((t) => sel.includes(t.id));
-  async function apply(fields, msg) { if (await ctx.update(sel, fields, `${msg} (${sel.length})`)) { setSel([]); ctx.load(); } }
-  const groupKey = grp === 'dept' ? (t) => t.department_id : grp === 'owner' ? (t) => t.owner_id : null;
-  const groupLabel = grp === 'dept' ? (k) => ctx.dept(k)?.name : (k) => ctx.person(k)?.name || 'Unassigned';
-  if (groupKey) { const m = new Map(); rows.forEach((t) => { const k = groupKey(t); if (!m.has(k)) m.set(k, []); m.get(k).push(t); }); setNav([...m.values()].flat()); } else setNav(rows);
-  return html`
-    <div class="head"><h1>All tasks</h1><span class="sub num">${rows.length} shown</span></div>
-    <div class="filters">
-      <label class="sr" for="q">Search</label><input id="q" class="field search" placeholder="Search tasks, people, task lists" value=${q} onInput=${(e) => setQ(e.target.value)} />
-      <select class="field" aria-label="Status" value=${status} onChange=${(e) => setStatus(e.target.value)}>${[['open', 'Open'], ['nodate', 'Needs priority and date'], ['late', 'Late'], ['blocked', 'Blocked'], ['done', 'Done (14 days)'], ['any', 'Everything']].map(([v, l]) => html`<option value=${v}>${l}</option>`)}</select>
-      <select class="field" aria-label="Department" value=${dept} onChange=${(e) => setDept(e.target.value)}><option value="">All departments</option>${ctx.depts.map((d) => html`<option value=${d.id}>${d.name}</option>`)}</select>
-      <select class="field" aria-label="Owner" value=${owner} onChange=${(e) => setOwner(e.target.value)}><option value="">Everyone</option>${ctx.people.map((p) => html`<option value=${p.id}>${p.name}</option>`)}</select>
-      <select class="field" aria-label="Priority" value=${prio} onChange=${(e) => setPrio(e.target.value)}><option value="">Any priority</option><option>P1</option><option>P2</option><option>P3</option><option value="none">No priority</option></select>
-      ${wide ? html`<select class="field" aria-label="Group by" value=${grp} onChange=${(e) => setGrp(e.target.value)}><option value="dept">Group by department</option><option value="owner">Group by person</option><option value="none">No grouping</option></select>` : ''}
-    </div>
-    ${sel.length ? html`<div class="bulk">
-      <b>${sel.length} selected</b>
-      <select class="field" aria-label="Set priority" onChange=${(e) => e.target.value && apply({ priority: e.target.value }, 'Priority set')}><option value="">Set priority</option><option>P1</option><option>P2</option><option>P3</option></select>
-      <input type="date" class="field" aria-label="Set deadline" min=${td} onChange=${(e) => e.target.value && apply({ due_date: e.target.value }, 'Deadline set')} />
-      <select class="field" aria-label="Reassign" onChange=${(e) => e.target.value && apply({ owner_id: e.target.value, acknowledged_at: null }, 'Reassigned')}><option value="">Reassign to</option>${ctx.people.map((p) => html`<option value=${p.id}>${p.name}</option>`)}</select>
-      <select class="field" aria-label="Move to department" onChange=${(e) => e.target.value && apply({ department_id: e.target.value, task_list_id: null }, 'Moved')}><option value="">Move to</option>${ctx.depts.map((d) => html`<option value=${d.id}>${d.name}</option>`)}</select>
-      <button class="btn" onClick=${() => apply({ status: 'done', completed_at: new Date().toISOString() }, 'Closed')}>Close</button>
-      <button class="btn quiet" onClick=${() => setSel([])}>Clear</button>
-    </div>` : ''}
-    <div style="display:flex;gap:10px;align-items:center;margin:4px 0 8px"><input type="checkbox" class="sel" style="margin:0" checked=${allOn} onChange=${() => setSel(allOn ? [] : rows.map((t) => t.id))} aria-label="Select all shown" /><span class="note">Select all ${rows.length} shown</span></div>
-    ${!rows.length ? html`<p class="empty">No tasks match.</p>`
-      : wide ? html`<${Grid} ctx=${ctx} rows=${rows} groupKey=${groupKey} groupLabel=${groupLabel} sel=${sel} toggle=${toggle} /><p class="kbd">Click any cell to edit. Arrow keys move between rows. On priority, press 1, 2 or 3. Dates accept fri, +7 or 12 nov. Tick rows to change many at once.</p>`
-      : html`<div class="rows"><${Limited} items=${rows} step=${100} render=${(t) => html`<${Row} key=${t.id} ctx=${ctx} t=${t} select=${toggle} selected=${sel.includes(t.id)} />`} /></div>`}`;
-}
-
 /* ---------- composer ---------- */
-function Composer({ ctx, deptHint }) {
+function Composer({ ctx, deptHint, listHint }) {
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const ref = useRef();
   useEffect(() => {
     const k = (e) => { if (e.key === 'n' && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName) && !e.metaKey && !e.ctrlKey) { e.preventDefault(); ref.current?.focus(); } };
-    window.addEventListener('keydown', k); return () => window.removeEventListener('keydown', k);
+    const c = (e) => { setText(e.detail || ''); setTimeout(() => ref.current?.focus(), 0); };
+    window.addEventListener('keydown', k); document.addEventListener('bs-compose', c);
+    return () => { window.removeEventListener('keydown', k); document.removeEventListener('bs-compose', c); };
   }, []);
   const ownerDept = (pid) => ctx.members.find((m) => m.person_id === pid)?.department_id;
   function onPaste(e) {
@@ -693,7 +949,7 @@ function Composer({ ctx, deptHint }) {
     const ok = data && !data.fallback && !data.error;
     if (ok && data.owner_id && data.due_date && data.priority) {
       const row = { title: data.title || s, owner_id: data.owner_id, due_date: data.due_date, due_time: data.due_time || null, priority: data.priority,
-        department_id: data.department_id || ownerDept(data.owner_id) || deptHint || ctx.myDepts[0] || ctx.depts[0].id, task_list_id: data.task_list_id || null, is_private: !!data.is_private, created_by: ctx.me.id, source: 'app' };
+        department_id: data.department_id || deptHint || ownerDept(data.owner_id) || ctx.myDepts[0] || ctx.depts[0].id, task_list_id: data.task_list_id || (deptHint && listHint && listHint !== 'none' ? listHint : null), is_private: !!data.is_private, created_by: ctx.me.id, source: 'app' };
       const { data: saved, error } = await sb.from('tasks').insert(row).select().single();
       setBusy(false);
       if (error) { ctx.setToast({ text: error.message }); return; }
@@ -706,19 +962,18 @@ function Composer({ ctx, deptHint }) {
     }
     const prefill = ok ? { ...data, raw: s } : { title: s, raw: s, parseNote: 'Could not read that. Fill in the fields.' };
     if (!prefill.department_id && deptHint) prefill.department_id = deptHint;
+    if (!prefill.task_list_id && listHint && listHint !== 'none') prefill.task_list_id = listHint;
     setBusy(false); setText('');
     ctx.newTask(prefill);
   }
   return html`<div class="composer"><form onSubmit=${submit}>
     <label class="sr" for="composer">Add a task</label>
-    <input id="composer" ref=${ref} placeholder=${busy ? 'Reading…' : 'Add a task: Tiru to finalise Diwali creative by Thu, P1. Paste several lines to add many.'} value=${text} disabled=${busy} onInput=${(e) => setText(e.target.value)} onPaste=${onPaste} autocomplete="off" />
-    <button type="submit" aria-label="Add task" disabled=${busy}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5"/><path d="M6 11l6-6 6 6"/></svg></button>
+    <input id="composer" ref=${ref} placeholder=${busy ? 'Reading…' : 'Add a task: “Tiru to finalise Diwali creative by Thu, urgent”. Paste several lines to add many.'} value=${text} disabled=${busy} onInput=${(e) => setText(e.target.value)} onPaste=${onPaste} autocomplete="off" />
+    <button type="submit" aria-label="Add task" disabled=${busy}><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5"/><path d="M6 11l6-6 6 6"/></svg></button>
   </form></div>`;
 }
 
 /* ---------- task sheet: new task (explicit add) and task panel (autosave) ---------- */
-let NAV = [];
-const setNav = (items) => { NAV = items.map((t) => t.id); };
 
 function TaskSheet({ ctx, sheet, close }) {
   if (sheet.mode === 'new') return html`<${NewTask} ctx=${ctx} pre=${sheet.prefill || {}} close=${close} />`;
@@ -732,7 +987,7 @@ function DeadlineField({ value, onChange, disabled }) {
   const [txt, setTxt] = useState('');
   const guess = parseQuick(txt);
   return html`<div>
-    ${!disabled ? html`<div class="chips" style="margin-bottom:8px">${chips.map(([l, d]) => html`<button type="button" class="chip" aria-pressed=${value === d} onClick=${() => onChange(d)}>${l}</button>`)}</div>` : ''}
+    ${!disabled ? html`<div class="qchips" style="margin-bottom:8px">${chips.map(([l, d]) => html`<button type="button" class="qchip" aria-pressed=${value === d} onClick=${() => onChange(d)}>${l}</button>`)}</div>` : ''}
     <div class="grid2">
       <input type="date" class="field" aria-label="Deadline date" value=${value || ''} disabled=${disabled} onChange=${(e) => e.target.value && onChange(e.target.value)} />
       ${!disabled ? html`<input class="field" placeholder="or type fri, +7, 12 nov" aria-label="Type a date" value=${txt} onInput=${(e) => setTxt(e.target.value)} onKeyDown=${(e) => { if (e.key === 'Enter' && guess) { onChange(guess); setTxt(''); } }} />` : ''}
@@ -740,7 +995,7 @@ function DeadlineField({ value, onChange, disabled }) {
     ${txt && !disabled ? html`<p class="note">${guess ? `Enter for ${fmtDate(guess)}` : 'Try fri, +7, 12 nov'}</p>` : value ? html`<p class="note">${fmtDate(value)}</p>` : ''}
   </div>`;
 }
-const PrioritySeg = ({ value, onChange, disabled }) => html`<div class="seg" role="radiogroup" aria-label="Priority">${['P1', 'P2', 'P3'].map((p) => html`<button type="button" role="radio" disabled=${disabled} aria-checked=${value === p} onClick=${() => onChange(p)}><span class="dot" style=${'background:' + PCOL[p]}></span>${p}</button>`)}</div>`;
+const PrioritySeg = ({ value, onChange, disabled }) => html`<${PrioritySlider} inPanel value=${value} disabled=${disabled} onChange=${onChange} />`;
 
 function NewTask({ ctx, pre, close }) {
   const ownerDept = (pid) => ctx.members.find((m) => m.person_id === pid)?.department_id;
@@ -762,9 +1017,9 @@ function NewTask({ ctx, pre, close }) {
     ctx.load(); close();
   }
   return html`<div class="scrim" onClick=${close}><div class="sheet" role="dialog" aria-modal="true" aria-label="New task" onClick=${(e) => e.stopPropagation()}>
-    <div class="top"><span class="from">${pre.raw ? `From: “${pre.raw}”` : 'New task'}</span><button class="btn quiet" onClick=${close}>Close</button></div>
+    <div class="top"><span class="from">${pre.raw ? `From: “${pre.raw}”` : 'New task'}</span><button class="btn ghost" onClick=${close}>Close</button></div>
     ${pre.parseNote ? html`<p class="note">${pre.parseNote}</p>` : ''}
-    <input class="titlein" aria-label="Task" value=${f.title} onInput=${(e) => set('title', e.target.value)} placeholder="What needs doing" />
+    <input class="titlein" aria-label="Task" autofocus value=${f.title} onInput=${(e) => set('title', e.target.value)} placeholder="What needs doing" />
     <div><label class="lbl" for="own">Owner</label><select id="own" class="field" value=${f.owner_id} onChange=${(e) => { const d = ownerDept(e.target.value); setF((x) => ({ ...x, owner_id: e.target.value, ...(d && !pre.department_id ? { department_id: d, task_list_id: '' } : {}) })); }}>${ctx.people.map((p) => html`<option value=${p.id}>${p.name}${p.id === ctx.me.id ? ' (me)' : ''}</option>`)}</select>
       ${pre.owner_candidates?.length ? html`<p class="note">More than one match: ${pre.owner_candidates.map((id) => ctx.person(id)?.name).join(', ')}</p>` : ''}</div>
     <div><span class="lbl">Deadline</span><${DeadlineField} value=${f.due_date} onChange=${(d) => set('due_date', d)} /></div>
@@ -776,7 +1031,7 @@ function NewTask({ ctx, pre, close }) {
     <div><label class="lbl" for="nt">Notes</label><textarea id="nt" class="field" value=${f.notes} onInput=${(e) => set('notes', e.target.value)}></textarea></div>
     <label style="display:flex;gap:10px;align-items:center"><input type="checkbox" class="sel" style="margin:0" checked=${f.is_private} onChange=${(e) => set('is_private', e.target.checked)} /> Private (only owner, creator and Bhargav)</label>
     ${err ? html`<p class="err" role="alert">${err}</p>` : ''}
-    <div class="actions"><button class="btn primary big" disabled=${saving} onClick=${add}>Add task</button><button class="btn quiet big" onClick=${close}>Cancel</button></div>
+    <div class="actions"><button class="btn primary big" disabled=${saving} onClick=${add}>Add task</button><button class="btn ghost big" onClick=${close}>Cancel</button></div>
   </div></div>`;
 }
 
@@ -844,7 +1099,7 @@ function TaskPanel({ ctx, id, close }) {
         ${idx >= 0 ? html`<span class="note num" style="margin-right:4px">${idx + 1} of ${NAV.length}</span>
           <button class="iconbtn" aria-label="Previous task (K)" disabled=${idx <= 0} onClick=${() => go(-1)}>↑</button>
           <button class="iconbtn" aria-label="Next task (J)" disabled=${idx >= NAV.length - 1} onClick=${() => go(1)}>↓</button>` : ''}
-        <button class="btn quiet" onClick=${close}>Close</button>
+        <button class="btn ghost" onClick=${close}>Close</button>
       </span>
     </div>
     <input class="titlein" aria-label="Task title" value=${title} disabled=${!can} onInput=${(e) => setTitle(e.target.value)} onBlur=${() => { const s = title.trim(); if (s && s !== t.title) save({ title: s }); }} onKeyDown=${(e) => e.key === 'Enter' && e.target.blur()} />
@@ -859,15 +1114,15 @@ function TaskPanel({ ctx, id, close }) {
     </div>
     ${t.request_status === 'pending' && isOwner ? html`<div class="box"><span>Request from ${ctx.person(t.created_by)?.name}</span><div class="actions"><button class="btn primary" onClick=${() => ctx.decideRequest(t, true)}>Accept</button><button class="btn" onClick=${() => { const n = prompt('Reason for declining (optional)'); ctx.decideRequest(t, false, n); close(); }}>Decline</button><span class="note">or change the owner below</span></div></div>` : ''}
     ${pendingReq ? html`<div class="box"><span>${first(ctx.person(pendingReq.requested_by)?.name)} asked to move this to ${fmtDate(pendingReq.proposed_due)}${pendingReq.reason ? `: ${pendingReq.reason}` : ''}</span>${ctx.canDecide(t) ? html`<div class="actions"><button class="btn primary" onClick=${() => ctx.decideDate(pendingReq, true)}>Approve</button><button class="btn" onClick=${() => ctx.decideDate(pendingReq, false)}>Reject</button></div>` : html`<span class="note">Waiting for approval.</span>`}</div>` : ''}
-    ${ask ? html`<div class="box"><label class="lbl" for="nd">New date</label><input id="nd" type="date" class="field" min=${today()} value=${ask.date} onInput=${(e) => setAsk({ ...ask, date: e.target.value })} /><input class="field" placeholder="Reason (optional)" value=${ask.reason} onInput=${(e) => setAsk({ ...ask, reason: e.target.value })} /><div class="actions"><button class="btn primary" onClick=${requestDate}>Send request</button><button class="btn quiet" onClick=${() => setAsk(null)}>Cancel</button></div></div>` : ''}
-    ${blk ? html`<div class="box"><input class="field" placeholder="What is it waiting on?" value=${blk.reason} onInput=${(e) => setBlk({ ...blk, reason: e.target.value })} /><select class="field" aria-label="Waiting on person" value=${blk.on} onChange=${(e) => setBlk({ ...blk, on: e.target.value })}><option value="">Waiting on (optional)</option>${ctx.people.map((p) => html`<option value=${p.id}>${p.name}</option>`)}</select><div class="actions"><button class="btn primary" onClick=${async () => { await save({ status: 'blocked', blocked_reason: blk.reason || null, blocked_on_person_id: blk.on || null }); setBlk(null); }}>Mark blocked</button><button class="btn quiet" onClick=${() => setBlk(null)}>Cancel</button></div></div>` : ''}
+    ${ask ? html`<div class="box"><label class="lbl" for="nd">New date</label><input id="nd" type="date" class="field" min=${today()} value=${ask.date} onInput=${(e) => setAsk({ ...ask, date: e.target.value })} /><input class="field" placeholder="Reason (optional)" value=${ask.reason} onInput=${(e) => setAsk({ ...ask, reason: e.target.value })} /><div class="actions"><button class="btn primary" onClick=${requestDate}>Send request</button><button class="btn ghost" onClick=${() => setAsk(null)}>Cancel</button></div></div>` : ''}
+    ${blk ? html`<div class="box"><input class="field" placeholder="What is it waiting on?" value=${blk.reason} onInput=${(e) => setBlk({ ...blk, reason: e.target.value })} /><select class="field" aria-label="Waiting on person" value=${blk.on} onChange=${(e) => setBlk({ ...blk, on: e.target.value })}><option value="">Waiting on (optional)</option>${ctx.people.map((p) => html`<option value=${p.id}>${p.name}</option>`)}</select><div class="actions"><button class="btn primary" onClick=${async () => { await save({ status: 'blocked', blocked_reason: blk.reason || null, blocked_on_person_id: blk.on || null }); setBlk(null); }}>Mark blocked</button><button class="btn ghost" onClick=${() => setBlk(null)}>Cancel</button></div></div>` : ''}
     ${t.status === 'blocked' && t.blocked_reason ? html`<p class="note">Blocked: ${t.blocked_reason}${t.blocked_on_person_id ? `, waiting on ${ctx.person(t.blocked_on_person_id)?.name}` : ''}</p>` : ''}
 
     <section style="display:flex;flex-direction:column;gap:12px">
       <span class="lbl" style="margin:0">Updates</span>
       <div style="display:flex;gap:8px"><input class="field" style="flex:1" aria-label="Add an update" placeholder="Add an update" value=${upd} onInput=${(e) => setUpd(e.target.value)} onKeyDown=${(e) => e.key === 'Enter' && addUpdate()} /><button class="btn primary" onClick=${addUpdate}>Post</button></div>
       ${updates === null ? html`<p class="note">Loading…</p>` : updates.length ? updates.slice(0, 12).map((u) => u.kind === 'u'
-        ? html`<div class="upd"><span class="av">${initials(ctx.person(u.author_id)?.name)}</span><div><div class="b"><b style="color:var(--ink);font-weight:600">${ctx.person(u.author_id)?.name}</b> ${ago(u.created_at)}</div><div class="x">${u.body}</div></div></div>`
+        ? html`<div class="upd"><${Avatar} ctx=${ctx} id=${u.author_id} /><div><div class="b"><b style="color:var(--ink);font-weight:600">${ctx.person(u.author_id)?.name}</b> ${ago(u.created_at)}</div><div class="x">${u.body}</div></div></div>`
         : html`<div class="sys">${activityText(ctx, u)} ${ago(u.created_at)}</div>`) : html`<p class="note">No updates yet.</p>`}
     </section>
 
@@ -883,7 +1138,7 @@ function TaskPanel({ ctx, id, close }) {
       <label style="display:flex;gap:10px;align-items:center"><input type="checkbox" class="sel" style="margin:0" disabled=${!can} checked=${t.is_private} onChange=${(e) => save({ is_private: e.target.checked })} /> Private (only owner, creator and Bhargav)</label>
       ${err ? html`<p class="err" role="alert">${err}</p>` : ''}
       <p class="note">Changes save as you make them. J and K move to the next and previous task.</p>
-      ${canDelete ? html`<div><button class="btn quiet" onClick=${del}>Delete task</button></div>` : ''}
+      ${canDelete ? html`<div><button class="btn ghost" onClick=${del}>Delete task</button></div>` : ''}
     </div>
   </div></div>`;
 }
@@ -911,7 +1166,7 @@ function BulkAdd({ ctx, lines, close }) {
     ctx.setToast({ text: `${ready.length} tasks added` }); ctx.load(); close();
   }
   return html`<div class="scrim" onClick=${close}><div class="sheet wide" role="dialog" aria-modal="true" aria-label="Add several tasks" onClick=${(e) => e.stopPropagation()}>
-    <div class="top"><span class="lbl" style="margin:0;font-size:15px;color:var(--ink);font-weight:600">${rows.length} tasks from your paste</span><button class="btn quiet" onClick=${close}>Close</button></div>
+    <div class="top"><span class="lbl" style="margin:0;font-size:15px;color:var(--ink);font-weight:600">${rows.length} tasks from your paste</span><button class="btn ghost" onClick=${close}>Close</button></div>
     <p class="note">Check owners and dates. Rows without a deadline are skipped.</p>
     ${rows.map((r, i) => html`<div class="bulkrow">
       <input class="field" aria-label="Task" value=${r.title} onInput=${(e) => upd(i, 'title', e.target.value)} />
@@ -921,7 +1176,7 @@ function BulkAdd({ ctx, lines, close }) {
       <button class="iconbtn" aria-label="Remove row" onClick=${() => setRows((rs) => rs.filter((_, j) => j !== i))}>✕</button>
       ${r.parsing ? html`<span class="note" style="grid-column:1/-1">Reading…</span>` : ''}
     </div>`)}
-    <div class="actions"><button class="btn primary big" disabled=${saving || !ready.length} onClick=${addAll}>Add ${ready.length} tasks</button><button class="btn quiet big" onClick=${close}>Cancel</button></div>
+    <div class="actions"><button class="btn primary big" disabled=${saving || !ready.length} onClick=${addAll}>Add ${ready.length} tasks</button><button class="btn ghost big" onClick=${close}>Cancel</button></div>
   </div></div>`;
 }
 
@@ -937,10 +1192,5 @@ function activityText(ctx, a) {
   return a.action;
 }
 
-/* ---------- toast ---------- */
-function Toast({ toast, done }) {
-  useEffect(() => { const tm = setTimeout(done, toast.undo || toast.action ? 6000 : 2500); return () => clearTimeout(tm); }, [toast]);
-  return html`<div class="toast" role="status">${toast.text}${toast.action ? html`<button onClick=${() => { toast.action.fn(); done(); }}>${toast.action.label}</button>` : ''}${toast.undo ? html`<button onClick=${() => { toast.undo(); done(); }}>Undo</button>` : ''}</div>`;
-}
 
 render(html`<${App} />`, document.getElementById('app'));
