@@ -215,11 +215,21 @@ function makeCtx({ me, data, setData, load, setSheet, setToast }) {
     await sb.from('date_change_requests').update({ status: 'approved', proposed_due: date, decided_by: me.id, decided_at: new Date().toISOString() }).eq('id', req.id);
     setToast({ text: `Moved to ${fmtDate(date)}` }); load();
   }
+  async function createList(deptId) {
+    const name = (prompt('Name of the new task list') || '').trim();
+    if (!name) return null;
+    const { data: row, error } = await sb.from('task_lists').insert({ department_id: deptId, name }).select().single();
+    if (error) { setToast({ text: error.code === '23505' ? 'A list with that name already exists' : error.message }); return null; }
+    setData((d) => ({ ...d, lists: [...d.lists, row].sort((a, b) => a.name.localeCompare(b.name)) }));
+    setToast({ text: `List "${name}" created` });
+    return row.id;
+  }
+  const canManageLists = (deptId) => isAdmin || isHead(deptId);
   const openTask = (t) => setSheet({ mode: 'edit', id: t.id });
   const newTask = (prefill) => setSheet({ mode: 'new', prefill });
 
   return { me, data, people, depts, members, lists, tasks, dcr, person, dept, list, isAdmin, myDepts, headDepts, isHead, canSeeStats, canDecide, canRedate, canEdit, save,
-    open, visibleOpen, mine, update, done, reopen, needsYou, decideDate, decideRequest, nudge, approveOther, openTask, newTask, load, setToast, setSheet };
+    open, visibleOpen, mine, update, done, reopen, needsYou, decideDate, decideRequest, nudge, approveOther, createList, canManageLists, openTask, newTask, load, setToast, setSheet };
 }
 
 /* ---------- login ---------- */
@@ -381,7 +391,7 @@ function GridRow({ ctx, t, selected, toggle, tick, saved }) {
     <td class="title"><${TitleCell} ctx=${ctx} t=${t} onSaved=${saved} /></td>
     <td><${OwnerPick} ctx=${ctx} t=${t} onSaved=${saved} /></td>
     <td><select class="cell-sel" aria-label="Department" disabled=${!lead} value=${t.department_id} onChange=${(e) => ctx.save(t, { department_id: e.target.value, task_list_id: null }, saved)}>${ctx.depts.map((d) => html`<option value=${d.id}>${d.name}</option>`)}</select></td>
-    <td><select class="cell-sel" aria-label="Task list" disabled=${!can} value=${t.task_list_id || ''} onChange=${(e) => ctx.save(t, { task_list_id: e.target.value || null }, saved)}><option value="">None</option>${lists.map((l) => html`<option value=${l.id}>${l.name}</option>`)}</select></td>
+    <td><select class="cell-sel" aria-label="Task list" disabled=${!can} value=${t.task_list_id || ''} onChange=${async (e) => { let v = e.target.value; if (v === '__new') { v = await ctx.createList(t.department_id); if (!v) { e.target.value = t.task_list_id || ''; return; } } ctx.save(t, { task_list_id: v || null }, saved); }}><option value="">None</option>${lists.map((l) => html`<option value=${l.id}>${l.name}</option>`)}${ctx.canManageLists(t.department_id) ? html`<option value="__new">+ New list…</option>` : ''}</select></td>
     <td><${PriorityPill} ctx=${ctx} t=${t} onSaved=${saved} /></td>
     <td><${DateChip} ctx=${ctx} t=${t} onSaved=${saved} /></td>
     <td><${StatusSel} ctx=${ctx} t=${t} onSaved=${saved} /></td>
@@ -551,18 +561,26 @@ function Dept({ ctx, route }) {
   const wide = useWide();
   const choices = ctx.isAdmin ? ctx.depts : ctx.depts.filter((d) => ctx.myDepts.includes(d.id));
   const id = route.dept && choices.some((d) => d.id === route.dept) ? route.dept : choices[0]?.id;
-  const [group, setGroup] = useState('owner');
+  const [group, setGroup] = useState('list');
   const [f, setF] = useState('open');
+  const [listF, setListF] = useState('');
+  useEffect(() => setListF(''), [id]);
   if (!id) return html`<div class="head"><h1>Department</h1></div><p class="empty">You are not in a department yet.</p>`;
   const all = ctx.tasks.filter((t) => t.department_id === id);
   const open = all.filter((t) => t.status !== 'done');
-  const shown = (f === 'open' ? open : f === 'late' ? open.filter(isLate) : f === 'blocked' ? open.filter((t) => t.status === 'blocked') : f === 'nodate' ? open.filter(needsDate) : all.filter((t) => t.status === 'done' && t.completed_at?.slice(0, 10) >= weekStart()))
+  const byStatus = f === 'open' ? open : f === 'late' ? open.filter(isLate) : f === 'blocked' ? open.filter((t) => t.status === 'blocked') : f === 'nodate' ? open.filter(needsDate) : all.filter((t) => t.status === 'done' && t.completed_at?.slice(0, 10) >= weekStart());
+  const deptLists = ctx.lists.filter((l) => l.department_id === id);
+  const countIn = (lid) => byStatus.filter((t) => (t.task_list_id || '') === lid).length;
+  const pills = [...deptLists.map((l) => ({ id: l.id, name: l.name, n: countIn(l.id) })), ...(countIn('') ? [{ id: '', name: 'No list', n: countIn(''), none: true }] : [])]
+    .sort((a, b) => b.n - a.n || a.name.localeCompare(b.name));
+  const shown = byStatus.filter((t) => listF === '' || (listF === '__none' ? !t.task_list_id : t.task_list_id === listF))
     .sort((a, b) => (a.due_date || '9').localeCompare(b.due_date || '9'));
   const requests = open.filter((t) => t.from_department_id && !t.acknowledged_at);
-  const lead = ctx.isAdmin || ctx.isHead(id);
-  const keyOf = (t) => (group === 'owner' ? t.owner_id : t.task_list_id || '');
-  const label = (k) => (group === 'owner' ? ctx.person(k)?.name || 'Unassigned' : k ? ctx.list(k)?.name : 'No task list');
-  label.count = (k, items) => (group === 'owner' && !ctx.canSeeStats(k) ? '' : `${items.length}${f === 'open' ? `, ${items.filter(isLate).length} late` : ''}`);
+  const lead = ctx.canManageLists(id);
+  const effGroup = listF ? 'owner' : group;
+  const keyOf = (t) => (effGroup === 'owner' ? t.owner_id : t.task_list_id || '');
+  const label = (k) => (effGroup === 'owner' ? ctx.person(k)?.name || 'Unassigned' : k ? ctx.list(k)?.name : 'No list');
+  label.count = (k, items) => (effGroup === 'owner' && !ctx.canSeeStats(k) ? '' : `${items.length}${f === 'open' ? `, ${items.filter(isLate).length} late` : ''}`);
   const groups = {};
   shown.forEach((t) => (groups[keyOf(t)] ||= []).push(t));
   const order = Object.keys(groups).sort((a, b) => groups[b].length - groups[a].length);
@@ -575,16 +593,21 @@ function Dept({ ctx, route }) {
       </select>
       <span class="sub num">${open.length} open, ${open.filter(isLate).length} late, ${open.filter((t) => t.status === 'blocked').length} blocked</span>
     </div>
+    <div class="lists" role="tablist" aria-label="Task lists">
+      <button role="tab" class="listpill" aria-selected=${listF === ''} onClick=${() => setListF('')}>All lists <span>${byStatus.length}</span></button>
+      ${pills.map((p) => html`<button role="tab" class="listpill" aria-selected=${listF === (p.none ? '__none' : p.id)} onClick=${() => setListF(p.none ? '__none' : p.id)}>${p.name} <span>${p.n}</span></button>`)}
+      ${lead ? html`<button class="listpill add" onClick=${async () => { const nid = await ctx.createList(id); if (nid) setListF(nid); }}>+ New list</button>` : ''}
+    </div>
     <div class="filters">
       <div class="chips">${[['open', 'Open'], ['late', 'Late'], ['blocked', 'Blocked'], ['nodate', 'No date'], ['done', 'Done this week']].map(([k, l]) => html`<button class="chip" aria-pressed=${f === k} onClick=${() => setF(k)}>${l}</button>`)}</div>
       <div style="flex:1"></div>
-      <div class="chips">${[['owner', 'By person'], ['list', 'By task list']].map(([k, l]) => html`<button class="chip" aria-pressed=${group === k} onClick=${() => setGroup(k)}>${l}</button>`)}</div>
+      ${!listF ? html`<div class="chips">${[['list', 'By task list'], ['owner', 'By person']].map(([k, l]) => html`<button class="chip" aria-pressed=${group === k} onClick=${() => setGroup(k)}>${l}</button>`)}</div>` : ''}
     </div>
     ${lead && requests.length ? html`<section class="panel"><div class="ph"><h2>Requests from other teams</h2></div>${requests.map((t) => html`<${Row} key=${t.id} ctx=${ctx} t=${t} showDept=${false} />`)}</section>` : ''}
-    ${!shown.length ? html`<p class="empty">No tasks here.</p>`
+    ${!shown.length ? html`<p class="empty">No tasks here.${listF && listF !== '__none' ? ' Add one below; it goes into this department.' : ''}</p>`
       : wide ? html`<${Grid} ctx=${ctx} rows=${sorted} groupKey=${keyOf} groupLabel=${label} /><p class="kbd">Click any cell to edit. Arrow keys move between rows. On priority, press 1, 2 or 3. Dates accept fri, +7 or 12 nov.</p>`
       : order.map((k) => html`<div class="gh">${label(k)}<span class="num">${label.count(k, groups[k])}</span></div>
-        <div class="rows"><${Limited} items=${groups[k]} step=${8} render=${(t) => html`<${Row} key=${t.id} ctx=${ctx} t=${t} showDept=${false} showOwner=${group !== 'owner'} />`} /></div>`)}`;
+        <div class="rows"><${Limited} items=${groups[k]} step=${8} render=${(t) => html`<${Row} key=${t.id} ctx=${ctx} t=${t} showDept=${false} showOwner=${effGroup !== 'owner'} />`} /></div>`)}`;
 }
 
 /* ---------- all tasks ---------- */
@@ -854,7 +877,7 @@ function TaskPanel({ ctx, id, close }) {
       <div><span class="lbl">Priority</span><${PrioritySeg} value=${t.priority} disabled=${!can} onChange=${(p) => save({ priority: p })} />${t.notes?.startsWith('Zoho priority') && !t.priority ? html`<p class="note">${t.notes}</p>` : ''}</div>
       <div class="grid2">
         <div><label class="lbl" for="dp">Department</label><select id="dp" class="field" disabled=${!(ctx.isAdmin || ctx.isHead(t.department_id))} value=${t.department_id} onChange=${(e) => save({ department_id: e.target.value, task_list_id: null })}>${ctx.depts.map((d) => html`<option value=${d.id}>${d.name}</option>`)}</select></div>
-        <div><label class="lbl" for="tl">Task list</label><select id="tl" class="field" disabled=${!can} value=${t.task_list_id || ''} onChange=${(e) => save({ task_list_id: e.target.value || null })}><option value="">None</option>${ctx.lists.filter((l) => l.department_id === t.department_id).map((l) => html`<option value=${l.id}>${l.name}</option>`)}</select></div>
+        <div><label class="lbl" for="tl">Task list</label><select id="tl" class="field" disabled=${!can} value=${t.task_list_id || ''} onChange=${async (e) => { let v = e.target.value; if (v === '__new') { v = await ctx.createList(t.department_id); if (!v) { e.target.value = t.task_list_id || ''; return; } } save({ task_list_id: v || null }); }}><option value="">None</option>${ctx.lists.filter((l) => l.department_id === t.department_id).map((l) => html`<option value=${l.id}>${l.name}</option>`)}${ctx.canManageLists(t.department_id) ? html`<option value="__new">+ New list…</option>` : ''}</select></div>
       </div>
       <div><label class="lbl" for="nt">Notes</label><textarea id="nt" class="field" disabled=${!can} value=${notes} onInput=${(e) => setNotes(e.target.value)} onBlur=${() => notes !== (t.notes || '') && save({ notes: notes || null })}></textarea></div>
       <label style="display:flex;gap:10px;align-items:center"><input type="checkbox" class="sel" style="margin:0" disabled=${!can} checked=${t.is_private} onChange=${(e) => save({ is_private: e.target.checked })} /> Private (only owner, creator and Bhargav)</label>

@@ -250,3 +250,9 @@ table.grid { width: 100%; min-width: 1080px; border-collapse: collapse; font-siz
 .teamx .row { flex-wrap: wrap; }
 .teamx .row .ctrls { width: 100%; padding-left: 34px; }
 .teamx .row .hover { opacity: 1; }
+.lists { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 6px; margin-bottom: 10px; scrollbar-width: thin; }
+.listpill { flex-shrink: 0; height: 34px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--raised); font-size: 13px; white-space: nowrap; }
+.listpill span { color: var(--muted); margin-left: 4px; font-variant-numeric: tabular-nums; }
+.listpill[aria-selected="true"] { background: var(--brand); border-color: var(--brand); color: var(--brand-ink); font-weight: 600; }
+.listpill[aria-selected="true"] span { color: var(--brand-ink); opacity: .7; }
+.listpill.add { border-style: dashed; color: var(--muted); }
