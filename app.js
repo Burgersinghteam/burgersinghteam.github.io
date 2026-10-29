@@ -351,11 +351,32 @@ function makeCtx({ me, data, setData, load, setSheet, setToast, setPalette, pins
     if (!ok.length) return setToast({ text: 'You can’t move that task.' });
     await update(ok, fields, label);
   }
+  async function moveList(l, d) {
+    const { error } = await sb.rpc('move_list', { l: l.id, d });
+    if (error) return setToast({ text: error.message });
+    setToast({ text: `“${l.name}” and its tasks moved to ${dept(d)?.name}` }); load();
+    location.hash = `dept?dept=${d}&list=${l.id}`;
+  }
+  async function renameList(l) {
+    const name = (prompt('Rename list', l.name) || '').trim();
+    if (!name || name === l.name) return;
+    const { error } = await sb.from('task_lists').update({ name }).eq('id', l.id);
+    if (error) return setToast({ text: error.code === '23505' ? 'A list with that name already exists' : error.message });
+    setToast({ text: 'List renamed' }); load();
+  }
+  async function deleteList(l) {
+    const n = tasks.filter((t) => t.task_list_id === l.id).length;
+    if (!confirm(`Delete the list “${l.name}”?${n ? ` Its ${n} tasks stay in the department under No list.` : ''}`)) return;
+    const { error } = await sb.from('task_lists').delete().eq('id', l.id);
+    if (error) return setToast({ text: error.message });
+    setToast({ text: 'List deleted' }); load();
+    if (location.hash.includes(l.id)) location.hash = 'dept?dept=' + l.department_id;
+  }
   const addPin = (name, query) => { const p = [...pins.filter((x) => x.name !== name), { name, query }]; setPins(p); savePins(p); };
   const removePin = (name) => { const p = pins.filter((x) => x.name !== name); setPins(p); savePins(p); };
 
   return { me, data, people, depts, members, lists, tasks, dcr, person, dept, list, deptColor, isAdmin, myDepts, headDepts, isHead, canSeeStats, canDecide, canRedate, canEdit, canOwner, canManageLists,
-    open, mine, ownerDept, update, save, done, reopen, needsYou, decideDate, approveOther, decideRequest, nudge, createList, moveTo, load, setToast, setSheet, setPalette,
+    open, mine, ownerDept, update, save, done, reopen, needsYou, decideDate, approveOther, decideRequest, nudge, createList, moveList, renameList, deleteList, moveTo, load, setToast, setSheet, setPalette,
     openTask: (t) => setSheet({ mode: 'edit', id: t.id }), newTask: (prefill) => setSheet({ mode: 'new', prefill }), pins, addPin, removePin };
 }
 
@@ -370,12 +391,17 @@ function Login() {
 }
 
 /* ---------- sidebar with department → list tree, pins, drop targets ---------- */
-function useDrop(onDrop) {
+function useDrop(onDrop, onList) {
   const [over, setOver] = useState(false);
   return [over, {
-    onDragOver: (e) => { if (e.dataTransfer.types.includes('text/bs-task')) { e.preventDefault(); setOver(true); } },
+    onDragOver: (e) => { const ty = e.dataTransfer.types; if (ty.includes('text/bs-task') || (onList && ty.includes('text/bs-list'))) { e.preventDefault(); setOver(true); } },
     onDragLeave: () => setOver(false),
-    onDrop: (e) => { e.preventDefault(); setOver(false); const ids = (e.dataTransfer.getData('text/bs-task') || '').split(',').filter(Boolean); if (ids.length) onDrop(ids); },
+    onDrop: (e) => {
+      e.preventDefault(); setOver(false);
+      const lid = e.dataTransfer.getData('text/bs-list');
+      if (lid && onList) return onList(lid);
+      const ids = (e.dataTransfer.getData('text/bs-task') || '').split(',').filter(Boolean); if (ids.length) onDrop(ids);
+    },
   }];
 }
 function SideDept({ ctx, d, route, view }) {
@@ -384,7 +410,7 @@ function SideDept({ ctx, d, route, view }) {
   useEffect(() => { if (activeDept) setOpen(true); }, [activeDept]);
   const openTasks = ctx.open().filter((t) => t.department_id === d.id);
   const lists = ctx.lists.filter((l) => l.department_id === d.id).map((l) => ({ ...l, n: openTasks.filter((t) => t.task_list_id === l.id).length })).sort((a, b) => b.n - a.n || a.name.localeCompare(b.name));
-  const [over, dropProps] = useDrop((ids) => ctx.moveTo(ids, { department_id: d.id, task_list_id: null }, `Moved to ${d.name}`));
+  const [over, dropProps] = useDrop((ids) => ctx.moveTo(ids, { department_id: d.id, task_list_id: null }, `Moved to ${d.name}`), (lid) => { const l = ctx.list(lid); if (l && l.department_id !== d.id && confirm(`Move the list “${l.name}” and all its tasks to ${d.name}?`)) ctx.moveList(l, d.id); });
   return html`<div>
     <a class=${'nl' + (over ? ' drop' : '')} href=${'#dept?dept=' + d.id} aria-current=${activeDept && !route.list ? 'page' : null} ...${dropProps}>
       <span role="button" tabindex="0" aria-label=${open ? 'Collapse lists' : 'Show lists'} aria-expanded=${open} class=${'caret' + (open ? ' open' : '')} style="display:inline-flex;width:12px;height:12px;color:var(--faint)" onClick=${(e) => { e.preventDefault(); e.stopPropagation(); setOpen(!open); }}>${I.caret}</span>
@@ -395,8 +421,28 @@ function SideDept({ ctx, d, route, view }) {
   </div>`;
 }
 function SideList({ ctx, d, l, active }) {
-  const [over, dropProps] = useDrop((ids) => ctx.moveTo(ids, { task_list_id: l.id }, `Moved to ${l.name}`));
-  return html`<a class=${'nl sub' + (over ? ' drop' : '')} href=${`#dept?dept=${d.id}&list=${l.id}`} aria-current=${active ? 'page' : null} ...${dropProps}><${LIcon} name=${l.name} sm />${l.name}<span class="c">${l.n || ''}</span></a>`;
+  const [over, dropProps] = useDrop((ids) => ctx.moveTo(ids, { task_list_id: l.id, department_id: d.id }, `Moved to ${l.name}`));
+  const can = ctx.canManageLists(d.id);
+  return html`<div class="slrow">
+    <a class=${'nl sub' + (over ? ' drop' : '')} href=${`#dept?dept=${d.id}&list=${l.id}`} aria-current=${active ? 'page' : null} draggable=${can}
+      onDragStart=${(e) => { e.dataTransfer.setData('text/bs-list', l.id); e.dataTransfer.effectAllowed = 'move'; }} ...${dropProps}><${LIcon} name=${l.name} sm />${l.name}<span class="c">${l.n || ''}</span></a>
+    ${can ? html`<${ListMenu} ctx=${ctx} l=${l} />` : ''}
+  </div>`;
+}
+function ListMenu({ ctx, l }) {
+  const [open, setOpen, ref] = usePop();
+  const [moving, setMoving] = useState(false);
+  const targets = ctx.depts.filter((x) => x.id !== l.department_id && (ctx.isAdmin || ctx.isHead(x.id)));
+  return html`<span class="anchor lmenu" ref=${ref}>
+    <button class="iconbtn" aria-label=${'Options for ' + l.name} onClick=${(e) => { e.preventDefault(); setOpen(!open); setMoving(false); }}>⋯</button>
+    ${open ? html`<div class="pop" style="right:0;left:auto;min-width:230px">${!moving ? html`
+      <button class="opt" onClick=${() => { setOpen(false); ctx.renameList(l); }}>Rename</button>
+      ${targets.length ? html`<button class="opt" onClick=${() => setMoving(true)}>Move to another department<span class="r">›</span></button>` : ''}
+      <button class="opt" style="color:var(--late)" onClick=${() => { setOpen(false); ctx.deleteList(l); }}>Delete list</button>`
+    : html`<span class="note" style="padding:4px 8px">Move “${l.name}” and its tasks to:</span>
+      <div class="opts">${targets.map((x) => html`<button class="opt" onClick=${() => { setOpen(false); ctx.moveList(l, x.id); }}><span class="ddot" style=${'background:' + ctx.deptColor(x.id)}></span>${x.name}</button>`)}</div>`}
+    </div>` : ''}
+  </span>`;
 }
 function Sidebar({ ctx, view, route }) {
   const isAdmin = ctx.isAdmin;
@@ -828,7 +874,7 @@ function Dept({ ctx, route }) {
   }
   return html`
     <div class="topbar">
-      <h1><span class="ddot" style=${`width:12px;height:12px;border-radius:3px;background:${ctx.deptColor(id)}`}></span>${listF && listF !== 'none' ? html`<a href=${'#dept?dept=' + id} style="color:var(--muted);text-decoration:none;font-weight:500">${d.name}</a><span style="color:var(--ghost)">/</span>${ctx.list(listF)?.name}` : d.name}</h1>
+      <h1><span class="ddot" style=${`width:12px;height:12px;border-radius:3px;background:${ctx.deptColor(id)}`}></span>${listF && listF !== 'none' ? html`<a href=${'#dept?dept=' + id} style="color:var(--muted);text-decoration:none;font-weight:500">${d.name}</a><span style="color:var(--ghost)">/</span>${ctx.list(listF)?.name}${lead && ctx.list(listF) ? html`<${ListMenu} ctx=${ctx} l=${ctx.list(listF)} />` : ''}` : d.name}</h1>
       <span class="sub num">${open.length} open, ${open.filter(isLate).length} late${heads.length ? `, heads ${heads.join(' and ')}` : ''}</span>
       <span class="grow"></span>
       <button class="btn" onClick=${runSummary}>${I.spark}Summarise team</button>

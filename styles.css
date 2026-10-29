@@ -345,3 +345,10 @@ textarea.field { height: auto; min-height: 70px; padding: 8px 10px; resize: vert
   @keyframes pop { from { transform: scale(.98); opacity: 0; } to { transform: none; opacity: 1; } }
 }
 @media (prefers-reduced-motion: reduce) { .slider .thumb, .slider, .caret { transition: none; } }
+
+.slrow { position: relative; display: flex; align-items: center; }
+.slrow .nl { flex: 1; min-width: 0; padding-right: 30px; }
+.slrow .lmenu { position: absolute; right: 2px; top: 50%; transform: translateY(-50%); opacity: 0; }
+.slrow:hover .lmenu, .slrow .lmenu:focus-within { opacity: 1; }
+.slrow:hover .c { visibility: hidden; }
+.side .pop { position: absolute; }
