@@ -187,6 +187,7 @@ function App() {
   const [palette, setPalette] = useState(false);
   const [error, setError] = useState('');
   const [pins, setPins] = useState(loadPins());
+  const [hint, setHint] = useState(null);
   const loadTimer = useRef();
 
   useEffect(() => {
@@ -242,7 +243,7 @@ function App() {
   if (!data) return html`<p class="boot">Loading tasks…</p>`;
   if (!me) return html`<div class="login"><div class="card"><h1>No access yet</h1><p>${session.user.email} is not set up in BS Tasks. Ask Bhargav to add you.</p><button class="btn big" onClick=${() => sb.auth.signOut()}>Sign out</button></div></div>`;
 
-  const ctx = makeCtx({ me, data, setData, load, setSheet, setToast, setPalette, pins, setPins });
+  const ctx = makeCtx({ me, data, setData, load, setSheet, setToast, setPalette, pins, setPins, setHint });
   const isAdmin = me.role === 'admin';
   const view = route.view || (isAdmin ? 'overview' : 'mine');
   const closeSheet = () => { setSheet(null); if (location.hash.startsWith('#task=')) history.replaceState(null, '', '#' + view); };
@@ -263,11 +264,12 @@ function App() {
       <${Composer} ctx=${ctx} deptHint=${view === 'dept' ? route.dept : null} listHint=${view === 'dept' ? route.list : null} />
       ${sheet ? html`<${TaskSheet} ctx=${ctx} sheet=${sheet} close=${closeSheet} />` : ''}
       ${palette ? html`<${Palette} ctx=${ctx} close=${() => setPalette(false)} />` : ''}
+      ${hint ? html`<${Hints} key=${hint.key} ctx=${ctx} hint=${hint} done=${() => setHint(null)} />` : ''}
       ${toast ? html`<${Toast} toast=${toast} done=${() => setToast(null)} />` : ''}
     </div>`;
 }
 
-function makeCtx({ me, data, setData, load, setSheet, setToast, setPalette, pins, setPins }) {
+function makeCtx({ me, data, setData, load, setSheet, setToast, setPalette, pins, setPins, setHint }) {
   const { people, depts, members, lists, tasks, dcr } = data;
   const person = (id) => people.find((p) => p.id === id);
   const dept = (id) => depts.find((d) => d.id === id);
@@ -372,11 +374,16 @@ function makeCtx({ me, data, setData, load, setSheet, setToast, setPalette, pins
     setToast({ text: 'List deleted' }); load();
     if (location.hash.includes(l.id)) location.hash = 'dept?dept=' + l.department_id;
   }
+  async function readUpdate(t, text) {
+    if (!text || text.length < 12 || t.is_private) return;
+    const r = await aiCall('read_update', { task_id: t.id, text });
+    if (r && !r.error && (r.done || r.blocked || r.new_date || r.new_tasks?.length)) setHint({ key: Date.now(), t: tasks.find((x) => x.id === t.id) || t, r });
+  }
   const addPin = (name, query) => { const p = [...pins.filter((x) => x.name !== name), { name, query }]; setPins(p); savePins(p); };
   const removePin = (name) => { const p = pins.filter((x) => x.name !== name); setPins(p); savePins(p); };
 
   return { me, data, people, depts, members, lists, tasks, dcr, person, dept, list, deptColor, isAdmin, myDepts, headDepts, isHead, canSeeStats, canDecide, canRedate, canEdit, canOwner, canManageLists,
-    open, mine, ownerDept, update, save, done, reopen, needsYou, decideDate, approveOther, decideRequest, nudge, createList, moveList, renameList, deleteList, moveTo, load, setToast, setSheet, setPalette,
+    open, mine, ownerDept, update, save, done, reopen, needsYou, decideDate, approveOther, decideRequest, nudge, readUpdate, createList, moveList, renameList, deleteList, moveTo, load, setToast, setSheet, setPalette,
     openTask: (t) => setSheet({ mode: 'edit', id: t.id }), newTask: (prefill) => setSheet({ mode: 'new', prefill }), pins, addPin, removePin };
 }
 
@@ -468,21 +475,30 @@ function Sidebar({ ctx, view, route }) {
 function Palette({ ctx, close }) {
   const [q, setQ] = useState('');
   const [i, setI] = useState(0);
+  const [ans, setAns] = useState(null);
+  const [brief, setBrief] = useState(null);
+  async function ask(question) {
+    setAns({ loading: true, question });
+    const r = await aiCall('ask', { question });
+    setAns(r.error ? { error: r.error, question } : { question, answer: r.answer, tasks: (r.task_ids || []).map((id) => ctx.tasks.find((t) => t.id === id)).filter(Boolean) });
+  }
   const items = useMemo(() => {
     const s = q.trim().toLowerCase();
     const out = [];
+    if (s && looksLikeQuestion(q)) out.push({ k: 'Ask AI', label: q, hint: 'Enter', keep: true, run: () => ask(q) });
     if (s) {
       const f = parseQuery(q, ctx);
       const hits = ctx.tasks.filter((t) => matchQuery(t, f, ctx));
       const desc = describeQuery(f, ctx);
-      if (desc) out.push({ k: 'Filter', label: `${desc}`, hint: `${hits.length} tasks`, run: () => { location.hash = 'all?q=' + encodeURIComponent(q); } });
+      if (desc && (hits.length || !looksLikeQuestion(q))) out.push({ k: 'Filter', label: `${desc}`, hint: `${hits.length} tasks`, run: () => { location.hash = 'all?q=' + encodeURIComponent(q); } });
       if (ctx.isAdmin && hits.length && hits.length <= 20 && (f.status === 'late' || f.quiet)) out.push({ k: 'Action', label: `${f.quiet ? 'Ask for updates on' : 'Nudge owners of'} these ${hits.length} tasks`, run: async () => { for (const t of hits) await ctx.nudge(t, f.quiet ? 'ask' : 'nudge'); } });
       ctx.tasks.filter((t) => t.title.toLowerCase().includes(s)).slice(0, 6).forEach((t) => out.push({ k: 'Task', label: t.title, hint: `${first(ctx.person(t.owner_id)?.name)}, ${shortDue(t.due_date)}`, run: () => ctx.openTask(t) }));
-      ctx.people.filter((p) => p.name.toLowerCase().includes(s)).slice(0, 4).forEach((p) => out.push({ k: 'Person', label: p.name, hint: 'Show their tasks', run: () => { location.hash = 'all?q=' + encodeURIComponent(p.name); } }));
+      ctx.people.filter((p) => p.name.toLowerCase().includes(s)).slice(0, 4).forEach((p) => { out.push({ k: 'Person', label: p.name, hint: 'Show their tasks', run: () => { location.hash = 'all?q=' + encodeURIComponent(p.name); } }); if (ctx.isAdmin && p.id !== ctx.me.id) out.push({ k: 'Prep', label: `1:1 brief with ${first(p.name)}`, keep: true, run: () => setBrief(p.id) }); });
       ctx.depts.filter((d) => d.name.toLowerCase().includes(s)).slice(0, 3).forEach((d) => out.push({ k: 'Go to', label: d.name, run: () => { location.hash = 'dept?dept=' + d.id; } }));
       ctx.lists.filter((l) => l.name.toLowerCase().includes(s)).slice(0, 4).forEach((l) => out.push({ k: 'List', label: l.name, hint: ctx.dept(l.department_id)?.name, run: () => { location.hash = `dept?dept=${l.department_id}&list=${l.id}`; } }));
       out.push({ k: 'Create', label: `New task: ${q}`, run: () => document.dispatchEvent(new CustomEvent('bs-compose', { detail: q })) });
     } else {
+      out.push({ k: 'Try', label: 'What is pending with Narendra on Swiggy?', run: () => setQ('What is pending with Narendra on Swiggy?') });
       out.push({ k: 'Try', label: 'vivek late urgent', run: () => setQ('vivek late urgent') });
       out.push({ k: 'Try', label: 'franchise sales due this week', run: () => setQ('franchise sales due this week') });
       out.push({ k: 'Try', label: 'no update offline revenue', run: () => setQ('no update offline revenue') });
@@ -490,14 +506,17 @@ function Palette({ ctx, close }) {
     }
     return out;
   }, [q]);
-  useEffect(() => setI(0), [q]);
-  const run = (it) => { if (!it) return; if (it.k !== 'Try') close(); it.run(); };
+  useEffect(() => { setI(0); setAns(null); }, [q]);
+  const run = (it) => { if (!it) return; if (it.k !== 'Try' && !it.keep) close(); it.run(); };
+  if (brief) return html`<${BriefSheet} ctx=${ctx} personId=${brief} close=${close} />`;
   return html`<div class="palette-scrim" onClick=${close}><div class="palette" role="dialog" aria-modal="true" aria-label="Search and commands" onClick=${(e) => e.stopPropagation()}>
     <div class="in">${I.search}<input autofocus ref=${(el) => el && setTimeout(() => el.focus(), 0)} placeholder="Search tasks, people, lists, or type a filter like “vivek late urgent”" value=${q} aria-label="Search"
       onInput=${(e) => setQ(e.target.value)}
       onKeyDown=${(e) => { if (e.key === 'ArrowDown') { e.preventDefault(); setI(Math.min(i + 1, items.length - 1)); } else if (e.key === 'ArrowUp') { e.preventDefault(); setI(Math.max(i - 1, 0)); } else if (e.key === 'Enter') { e.preventDefault(); run(items[i]); } else if (e.key === 'Escape') close(); }} /><kbd>Esc</kbd></div>
+    ${ans ? html`<div class="answer">${ans.loading ? html`<span class="muted">${I.spark} Thinking about “${ans.question}”…</span>` : ans.error ? html`<span class="err">${ans.error}</span>` : html`<div class="a">${I.spark} ${ans.answer}</div>
+      ${ans.tasks.map((t) => html`<button class="it" onClick=${() => { close(); ctx.openTask(t); }}><span class="k">${first(ctx.person(t.owner_id)?.name)}</span><span>${t.title}</span><span class="h">${t.status === 'done' ? 'Done' : shortDue(t.due_date)}</span></button>`)}`}</div>` : ''}
     <div class="res" role="listbox">${items.map((it, n) => html`<button class="it" role="option" aria-selected=${n === i} onMouseEnter=${() => setI(n)} onClick=${() => run(it)}><span class="k">${it.k}</span><span>${it.label}</span>${it.hint ? html`<span class="h">${it.hint}</span>` : ''}</button>`)}</div>
-    <div class="foot">Words like late, blocked, urgent, today, this week, no update, a name, a department or a list become filters. ↑ ↓ to move, Enter to open.</div>
+    <div class="foot">Type words like late, urgent, this week, a name or a list to filter, or ask a question ending in ? for an AI answer.</div>
   </div></div>`;
 }
 
@@ -574,6 +593,7 @@ function QuickUpdate({ ctx, t, close }) {
       await ctx.update(t.id, fields, null);
     }
     setBusy(false); close();
+    if (body && status === t.status) ctx.readUpdate(t, body);
     ctx.setToast({ text: status === 'done' ? 'Marked done' + (body ? ' with update' : '') : status === 'blocked' ? 'Marked blocked' : body ? 'Update posted' : 'Status changed' });
     ctx.load();
   }
@@ -671,7 +691,7 @@ function TRow({ ctx, t, sel, toggle, selecting, showList = true, showDept = fals
   return html`<div class=${'trow' + (sel ? ' sel' : '') + (t.status === 'done' ? ' isdone' : '') + (qu ? ' open' : '')} draggable=${can && !qu} onDragStart=${dragStart} onDragEnd=${(e) => e.currentTarget.classList.remove('dragging')}
     tabindex="-1" onKeyDown=${(e) => { if (e.key.toLowerCase() === 'u' && e.target === e.currentTarget && can) { e.preventDefault(); setQu(true); } }}>
     <span class="grip" aria-hidden="true" title="Drag to a list, a day or a department">⋮⋮</span>
-    ${toggle ? html`<input type="checkbox" class="cbox" checked=${sel} onChange=${() => toggle(t.id)} aria-label=${'Select ' + t.title} />` : ''}
+    ${toggle ? html`<input type="checkbox" class="cbox" checked=${sel} onClick=${(e) => toggle(t.id, e.shiftKey)} aria-label=${'Select ' + t.title + '. Shift-click to select a range'} />` : ''}
     <button class=${'ring' + (t.status === 'done' ? ' done' : t.status === 'blocked' ? ' blocked' : !t.priority ? ' none' : '')} disabled=${!can} aria-label=${(t.status === 'done' ? 'Reopen: ' : 'Mark done: ') + t.title} onClick=${() => (t.status === 'done' ? ctx.reopen(t) : ctx.done(t))}></button>
     <div class="tmain">
       <span class="ttitle" role="button" tabindex="0" onClick=${() => ctx.openTask(t)} onKeyDown=${(e) => e.key === 'Enter' && ctx.openTask(t)}
@@ -690,9 +710,10 @@ function TRow({ ctx, t, sel, toggle, selecting, showList = true, showDept = fals
 }
 
 /* ---------- grouped list with drop targets ---------- */
-function GroupHead({ label, icon, n, pct, hint, collapsed, onToggle, onDrop, onAdd }) {
+function GroupHead({ label, icon, n, pct, hint, collapsed, onToggle, onDrop, onAdd, allSel, onSelAll }) {
   const [over, dropProps] = useDrop(onDrop || (() => {}));
   return html`<div class=${'ghead' + (over ? ' drop' : '')} onClick=${onToggle} ...${onDrop ? dropProps : {}}>
+    ${onSelAll ? html`<input type="checkbox" class="cbox gsel" checked=${allSel} aria-label=${'Select all in ' + label} onClick=${(e) => { e.stopPropagation(); onSelAll(); }} />` : ''}
     <span class=${'caret' + (collapsed ? '' : ' open')} style="display:inline-flex;color:var(--faint)">${I.caret}</span>
     ${icon}<span class="name">${label}</span><span class="n">${n}</span>
     ${pct != null ? html`<span class="prog" aria-hidden="true"><i style=${`width:${pct}%`}></i></span><span class="n">${pct}% this week</span>` : ''}
@@ -700,14 +721,25 @@ function GroupHead({ label, icon, n, pct, hint, collapsed, onToggle, onDrop, onA
     ${onAdd ? html`<button class="iconbtn" aria-label=${'Add a task to ' + label} onClick=${(e) => { e.stopPropagation(); onAdd(); }}>${I.plus}</button>` : ''}
   </div>`;
 }
-function Groups({ ctx, groups, sel, toggle, rowProps = {} }) {
+function Groups({ ctx, groups, sel, setSel, rowProps = {} }) {
   const [closed, setClosed] = useState({});
+  const last = useRef(null);
   const selecting = sel && sel.length > 0;
   const dragIds = (id) => (sel && sel.includes(id) ? sel : [id]);
-  return html`<div class=${selecting ? 'selecting' : ''}>${groups.map((g) => html`<div key=${g.key}>
-    ${g.label != null ? html`<${GroupHead} ...${g} collapsed=${closed[g.key]} onToggle=${() => setClosed((c) => ({ ...c, [g.key]: !c[g.key] }))} />` : ''}
+  const flat = groups.flatMap((g) => (closed[g.key] ? [] : g.items)).map((t) => t.id);
+  const toggle = setSel ? (id, shift) => {
+    if (shift && last.current && flat.includes(last.current)) {
+      const [a, b] = [flat.indexOf(last.current), flat.indexOf(id)].sort((x, y) => x - y);
+      const range = flat.slice(a, b + 1);
+      setSel((s) => [...new Set([...s, ...range])]);
+    } else setSel((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
+    last.current = id;
+  } : null;
+  return html`<div class=${selecting ? 'selecting' : ''}>${groups.map((g) => { const ids = g.items.map((t) => t.id); const allSel = !!sel && ids.length > 0 && ids.every((x) => sel.includes(x)); return html`<div key=${g.key}>
+    ${g.label != null ? html`<${GroupHead} ...${g} collapsed=${closed[g.key]} onToggle=${() => setClosed((c) => ({ ...c, [g.key]: !c[g.key] }))}
+      allSel=${allSel} onSelAll=${setSel ? () => setSel((s) => (allSel ? s.filter((x) => !ids.includes(x)) : [...new Set([...s, ...ids])])) : null} />` : ''}
     ${closed[g.key] ? '' : html`<${RowsLimited} ctx=${ctx} items=${g.items} sel=${sel} toggle=${toggle} dragIds=${dragIds} rowProps=${rowProps} />`}
-  </div>`)}</div>`;
+  </div>`; })}</div>`;
 }
 function RowsLimited({ ctx, items, sel, toggle, dragIds, rowProps }) {
   const [n, setN] = useState(40);
@@ -738,12 +770,20 @@ function BulkBar({ ctx, sel, clear }) {
     <b>${sel.length} selected</b>
     <${BulkPop} label="Priority">${(close) => html`<${PrioritySlider} always value=${null} onChange=${(p) => { close(); apply({ priority: p }, `Set ${PRI[p]}`); }} />`}</${BulkPop}>
     <${BulkPop} label="Deadline">${(close) => html`<div class="qchips">${[['Today', today()], ['Tomorrow', addDays(today(), 1)], ['Fri', parseQuick('fri')], ['Mon', nextDow(0)], ['+1 week', addDays(today(), 7)]].map(([l, d]) => html`<button class="qchip" onClick=${() => { close(); apply({ due_date: d }, `Due ${fmtDate(d)}`); }}>${l}</button>`)}</div><input type="date" class="field" aria-label="Pick a date" onChange=${(e) => { if (e.target.value) { close(); apply({ due_date: e.target.value }, `Due ${fmtDate(e.target.value)}`); } }} />`}</${BulkPop}>
-    <${BulkPop} label="Owner">${(close) => html`<div class="opts">${ctx.people.map((p) => html`<button class="opt" onClick=${() => { close(); apply({ owner_id: p.id, acknowledged_at: null }, `Assigned to ${first(p.name)}`); }}><${Avatar} ctx=${ctx} id=${p.id} size=${22} />${p.name}</button>`)}</div>`}</${BulkPop}>
+    <${BulkPop} label="Owner">${(close) => html`<${OwnerList} ctx=${ctx} onPick=${(p) => { close(); apply({ owner_id: p.id, acknowledged_at: p.id === ctx.me.id ? new Date().toISOString() : null }, `Assigned to ${first(p.name)}`); }} />`}</${BulkPop}>
     <${BulkPop} label="Move">${(close) => html`<div class="opts">${ctx.depts.map((d) => html`<div><div class="opt" style="font-weight:600;cursor:default"><span class="ddot" style=${'background:' + ctx.deptColor(d.id)}></span>${d.name}<button class="linkbtn" style="margin-left:auto;font-size:12px" onClick=${() => { close(); apply({ department_id: d.id, task_list_id: null }, `Moved to ${d.name}`); }}>Move here</button></div>
       ${ctx.lists.filter((l) => l.department_id === d.id).map((l) => html`<button class="opt" style="padding-left:24px" onClick=${() => { close(); apply({ department_id: d.id, task_list_id: l.id }, `Moved to ${l.name}`); }}><${LIcon} name=${l.name} sm />${l.name}</button>`)}</div>`)}</div>`}</${BulkPop}>
     <span class="bb"><button onClick=${() => apply({ status: 'done', completed_at: new Date().toISOString() }, 'Closed')}>Close</button></span>
     <span class="bb"><button onClick=${clear} aria-label="Clear selection">✕</button></span>
   </div>`;
+}
+function OwnerList({ ctx, onPick }) {
+  const [q, setQ] = useState('');
+  const [i, setI] = useState(0);
+  const opts = ctx.people.filter((p) => p.name.toLowerCase().includes(q.toLowerCase()));
+  return html`<input class="field" placeholder="Assign to…" aria-label="Search people" value=${q} onInput=${(e) => { setQ(e.target.value); setI(0); }}
+    onKeyDown=${(e) => { if (e.key === 'ArrowDown') { e.preventDefault(); setI(Math.min(i + 1, opts.length - 1)); } else if (e.key === 'ArrowUp') { e.preventDefault(); setI(Math.max(i - 1, 0)); } else if (e.key === 'Enter' && opts[i]) onPick(opts[i]); }} />
+    <div class="opts" role="listbox">${opts.map((p, n) => html`<button class="opt" role="option" aria-selected=${n === i} onClick=${() => onPick(p)}><${Avatar} ctx=${ctx} id=${p.id} size=${22} />${p.name}<span class="r">${ctx.dept(ctx.ownerDept(p.id))?.name || ''}</span></button>`)}</div>`;
 }
 function BulkPop({ label, children }) {
   const [open, setOpen, ref] = usePop();
@@ -810,12 +850,13 @@ function AllTasks({ ctx, route }) {
       ${chips.map(([k, v]) => html`<span class="fchip"><span>${k}</span><b>${v}</b><button aria-label=${'Remove ' + k} onClick=${() => { if (k === 'Due' && day) setDay(null); else setQ(''); }}>×</button></span>`)}
       ${q ? html`<button class="addfilter" onClick=${() => { const n = prompt('Name this view', describeQuery(f, ctx)); if (n) { ctx.addPin(n.trim(), q); ctx.setToast({ text: `Pinned “${n.trim()}” to the sidebar` }); } }}>${I.pin}Pin view</button>` : ''}
       ${route.pin ? html`<button class="addfilter" onClick=${() => { ctx.removePin(route.pin); location.hash = 'all'; }}>Unpin</button>` : ''}
+      ${rows.length ? html`<button class="addfilter" onClick=${() => setSel(sel.length === rows.length ? [] : rows.map((t) => t.id))}>${sel.length === rows.length ? 'Clear selection' : `Select all ${rows.length}`}</button>` : ''}
       <span class="grow" style="flex:1"></span>
       <label class="ctl">Group <select value=${group} onChange=${(e) => setGroup(e.target.value)}><option value="dept">Department</option><option value="list">Task list</option><option value="owner">Person</option><option value="prio">Priority</option><option value="none">None</option></select></label>
       <label class="ctl">Sort <select value=${sort} onChange=${(e) => setSort(e.target.value)}><option value="due">Deadline</option><option value="priority">Priority</option><option value="updated">Last update</option></select></label>
     </div>
     <div class="page">
-      ${rows.length ? html`<${Groups} ctx=${ctx} groups=${groups} sel=${sel} toggle=${toggle} rowProps=${{ showDept: group !== 'dept', showList: group !== 'list' }} />` : html`<p class="empty">No tasks match.</p>`}
+      ${rows.length ? html`<${Groups} ctx=${ctx} groups=${groups} sel=${sel} setSel=${setSel} rowProps=${{ showDept: group !== 'dept', showList: group !== 'list' }} />` : html`<p class="empty">No tasks match.</p>`}
     </div>
     <${BulkBar} ctx=${ctx} sel=${sel} clear=${() => setSel([])} />`;
 }
@@ -831,6 +872,8 @@ function Dept({ ctx, route }) {
   const [sel, setSel] = useState([]);
   const [summary, setSummary] = useState(null);
   const [suggest, setSuggest] = useState(null);
+  const [assign, setAssign] = useState(false);
+  const [aiSheet, setAiSheet] = useState(null);
   useEffect(() => { setSel([]); setDay(null); setSummary(null); }, [id, listF]);
   if (!id) return html`<div class="topbar"><h1>Department</h1></div><p class="empty">You are not in a department yet.</p>`;
   const d = ctx.dept(id);
@@ -877,13 +920,18 @@ function Dept({ ctx, route }) {
       <h1><span class="ddot" style=${`width:12px;height:12px;border-radius:3px;background:${ctx.deptColor(id)}`}></span>${listF && listF !== 'none' ? html`<a href=${'#dept?dept=' + id} style="color:var(--muted);text-decoration:none;font-weight:500">${d.name}</a><span style="color:var(--ghost)">/</span>${ctx.list(listF)?.name}${lead && ctx.list(listF) ? html`<${ListMenu} ctx=${ctx} l=${ctx.list(listF)} />` : ''}` : d.name}</h1>
       <span class="sub num">${open.length} open, ${open.filter(isLate).length} late${heads.length ? `, heads ${heads.join(' and ')}` : ''}</span>
       <span class="grow"></span>
-      <button class="btn" onClick=${runSummary}>${I.spark}Summarise team</button>
+      <button class="btn" onClick=${runSummary}>${I.spark}Summarise</button>
+      <button class="btn" onClick=${() => setAiSheet('brief')}>Prep brief</button>
+      <button class="btn" onClick=${() => setAiSheet('notes')}>From notes</button>
+      ${ctx.isAdmin || lead ? html`<button class="btn" onClick=${() => setAiSheet('cleanup')}>Clean up</button>` : ''}
       <button class="btn primary" onClick=${() => ctx.newTask({ department_id: id, task_list_id: listF && listF !== 'none' ? listF : '' })}>${I.plus}New task</button>
     </div>
     ${summary ? html`<div class="summary" role="status"><div class="h"><span>${I.spark} ${d.name}, this week</span><button class="iconbtn" aria-label="Close summary" onClick=${() => setSummary(null)}>✕</button></div>
       ${summary.loading ? html`<span class="muted">Reading tasks and updates…</span>` : summary.error ? html`<span class="err">${summary.error}</span>` : html`<ol>${summary.lines.map((l) => html`<li>${l}</li>`)}</ol>`}</div>` : ''}
     <${WeekStrip} ctx=${ctx} tasks=${all.filter(inList)} day=${day} setDay=${setDay} />
     ${lead && noList >= 3 && !listF && lists.length ? html`<div class="banner"><span>${I.spark}</span><span class="t"><b style="font-weight:600">${noList} tasks have no list.</b> Auto-sort suggests a list for each, from the title and similar tasks.</span><button class="btn dark" disabled=${suggest?.loading} onClick=${runSuggest}>${suggest?.loading ? 'Thinking…' : 'Review suggestions'}</button></div>` : ''}
+    ${ctx.isAdmin && !listF && open.filter((t) => t.owner_id === ctx.me.id && !t.is_private).length >= 3 && ctx.members.some((m) => m.department_id === id && m.person_id !== ctx.me.id) ? html`<div class="banner"><span>${I.spark}</span><span class="t"><b style="font-weight:600">${open.filter((t) => t.owner_id === ctx.me.id && !t.is_private).length} tasks here are with you.</b> Get suggested owners from this team.</span><button class="btn dark" onClick=${() => setAssign([id])}>Suggest owners</button></div>` : ''}
+    ${assign ? html`<${OwnerSuggest} ctx=${ctx} deptIds=${assign} close=${() => setAssign(false)} />` : ''}
     <div class="mlists">
       <button class="lp" aria-pressed=${!listF} onClick=${() => (location.hash = 'dept?dept=' + id)}>All lists</button>
       ${lists.map((l) => html`<button class="lp" aria-pressed=${listF === l.id} onClick=${() => (location.hash = `dept?dept=${id}&list=${l.id}`)}>${l.name}</button>`)}
@@ -891,10 +939,15 @@ function Dept({ ctx, route }) {
     <div class="filterbar">
       <div class="tabs" role="tablist">${[['open', 'Open'], ['late', 'Late'], ['blocked', 'Blocked'], ['nodate', 'Needs date'], ['done', 'Done']].map(([k, l]) => html`<button role="tab" class="tab" aria-selected=${tab === k} onClick=${() => setTab(k)}>${l}<span>${all.filter((t) => byStatus(t, k) && inList(t)).length}</span></button>`)}</div>
       ${day ? html`<span class="fchip"><span>Due</span><b>${fmtDate(day)}</b><button aria-label="Clear day" onClick=${() => setDay(null)}>×</button></span>` : ''}
+      <span style="flex:1"></span>
+      ${shown.length ? html`<button class="addfilter" onClick=${() => setSel(sel.length === shown.length ? [] : shown.map((t) => t.id))}>${sel.length === shown.length ? 'Clear selection' : `Select all ${shown.length}`}</button>` : ''}
     </div>
     ${lead && requests.length ? html`<div style="padding:12px 28px 0"><div class="panel"><div class="ph"><h2>Requests from other teams</h2></div>${requests.map((t) => html`<${TRow} key=${t.id} ctx=${ctx} t=${t} />`)}</div></div>` : ''}
-    <div class="page">${shown.length ? html`<${Groups} ctx=${ctx} groups=${groups} sel=${sel} toggle=${toggle} rowProps=${{ showList: !!listF ? false : false }} />` : html`<p class="empty">No tasks here.</p>`}</div>
+    <div class="page">${shown.length ? html`<${Groups} ctx=${ctx} groups=${groups} sel=${sel} setSel=${setSel} rowProps=${{ showList: false }} />` : html`<p class="empty">No tasks here.</p>`}</div>
     <${BulkBar} ctx=${ctx} sel=${sel} clear=${() => setSel([])} />
+    ${aiSheet === 'brief' ? html`<${BriefSheet} ctx=${ctx} deptId=${id} close=${() => setAiSheet(null)} />` : ''}
+    ${aiSheet === 'notes' ? html`<${NotesSheet} ctx=${ctx} deptId=${id} close=${() => setAiSheet(null)} />` : ''}
+    ${aiSheet === 'cleanup' ? html`<${CleanupSheet} ctx=${ctx} deptId=${id} close=${() => setAiSheet(null)} />` : ''}
     ${suggest?.items ? html`<${SuggestSheet} ctx=${ctx} deptId=${id} items=${suggest.items} close=${() => setSuggest(null)} />` : ''}`;
 }
 function SuggestSheet({ ctx, deptId, items: init, close }) {
@@ -916,6 +969,63 @@ function SuggestSheet({ ctx, deptId, items: init, close }) {
       <select class="field" aria-label="List" value=${it.list_id} onChange=${(e) => setItems(items.map((x, j) => (j === n ? { ...x, list_id: e.target.value } : x)))}>${lists.map((l) => html`<option value=${l.id} selected=${l.id === it.list_id}>${l.name}</option>`)}</select>
     </div>` : ''; })}</div>
     <div class="actions"><button class="btn primary big" disabled=${!on.length} onClick=${apply}>File ${on.length} tasks</button><button class="btn ghost big" onClick=${close}>Cancel</button></div>
+  </div></div>`;
+}
+
+
+/* ---------- AI: suggest owners for tasks the admin owns ---------- */
+function OwnerSuggest({ ctx, deptIds, close }) {
+  const [prog, setProg] = useState({ i: 0, name: '' });
+  const [items, setItems] = useState(null);
+  const [notes, setNotes] = useState([]);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const all = []; const skipped = [];
+      for (let i = 0; i < deptIds.length; i++) {
+        const d = ctx.dept(deptIds[i]);
+        if (!alive) return;
+        setProg({ i: i + 1, name: d?.name });
+        const { data, error } = await sb.functions.invoke('ai', { body: { mode: 'suggest_owners', department_id: deptIds[i] } });
+        if (error || data?.error) { skipped.push(`${d?.name}: ${data?.error || 'could not get suggestions'}`); if ((data?.error || '').includes('limit')) break; continue; }
+        if (data.note) skipped.push(`${d?.name}: ${data.note}`);
+        (data.suggestions || []).forEach((s) => all.push({ ...s, dept: deptIds[i], on: true }));
+      }
+      if (alive) { setItems(all); setNotes(skipped); }
+    })();
+    return () => { alive = false; };
+  }, []);
+  const on = (items || []).filter((x) => x.on && x.owner_id !== ctx.me.id);
+  async function apply() {
+    setBusy(true);
+    const byOwner = {};
+    on.forEach((x) => (byOwner[x.owner_id] ||= []).push(x.task_id));
+    for (const [oid, ids] of Object.entries(byOwner)) await sb.from('tasks').update({ owner_id: oid, acknowledged_at: null }).in('id', ids);
+    setBusy(false);
+    ctx.setToast({ text: `${on.length} tasks handed out to ${Object.keys(byOwner).length} people` }); ctx.load(); close();
+  }
+  const teamOf = (d) => ctx.members.filter((m) => m.department_id === d).map((m) => ctx.person(m.person_id)).filter(Boolean);
+  const groups = deptIds.map((d) => ({ d, rows: (items || []).map((x, n) => ({ ...x, n })).filter((x) => x.dept === d) })).filter((g) => g.rows.length);
+  const count = (pid) => on.filter((x) => x.owner_id === pid).length;
+  return html`<div class="scrim" onClick=${close}><div class="sheet wide" role="dialog" aria-modal="true" aria-label="Suggested owners" onClick=${(e) => e.stopPropagation()}>
+    <div class="top"><b style="font-size:16px;font-weight:600;display:flex;gap:8px;align-items:center">${I.spark} Suggested owners</b><button class="btn ghost" onClick=${close}>Close</button></div>
+    ${items === null ? html`<p class="note">Reading ${prog.name}… department ${prog.i} of ${deptIds.length}. This takes a few seconds per department.</p>` : html`
+      <p class="note">Gemini suggested an owner for ${items.length} of your tasks, based on each department's team and who already owns similar work. Tasks it thought should stay with you are not listed. Untick or change anything; nothing moves until you apply.</p>
+      ${on.length ? html`<p class="note">Split: ${[...new Set(on.map((x) => x.owner_id))].map((pid) => `${first(ctx.person(pid)?.name)} ${count(pid)}`).join(', ')}</p>` : ''}
+      ${notes.length ? html`<p class="note">Skipped: ${notes.join('; ')}</p>` : ''}
+      ${groups.map((g) => html`<div>
+        <div style="display:flex;align-items:center;gap:8px;margin:10px 0 4px;font-weight:600"><span class="ddot" style=${'background:' + ctx.deptColor(g.d)}></span>${ctx.dept(g.d)?.name}<span class="muted" style="font-weight:400">${g.rows.length}</span></div>
+        ${g.rows.map((x) => { const t = ctx.tasks.find((y) => y.id === x.task_id); return t ? html`<div class="suggrow">
+          <input type="checkbox" class="cbox" style="opacity:1" checked=${x.on} aria-label=${'Apply for ' + t.title} onChange=${() => setItems(items.map((y, j) => (j === x.n ? { ...y, on: !y.on } : y)))} />
+          <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title=${t.title}>${t.title}${t.task_list_id ? html` <span class="tag" style="margin-left:6px">${ctx.list(t.task_list_id)?.name}</span>` : ''}</span>
+          <select class="field" aria-label="Owner" value=${x.owner_id} onChange=${(e) => setItems(items.map((y, j) => (j === x.n ? { ...y, owner_id: e.target.value } : y)))}>
+            ${[...teamOf(g.d), ctx.me].filter((p, i, arr) => arr.findIndex((q) => q.id === p.id) === i).map((p) => html`<option value=${p.id} selected=${p.id === x.owner_id}>${p.id === ctx.me.id ? 'Keep with me' : p.name}</option>`)}
+          </select>
+        </div>` : ''; })}
+      </div>`)}
+      ${!items.length ? html`<p class="empty" style="padding:8px 0">No suggestions. Departments without team members can't be assigned automatically.</p>` : ''}
+      <div class="actions"><button class="btn primary big" disabled=${busy || !on.length} onClick=${apply}>${busy ? 'Assigning…' : `Assign ${on.length} tasks`}</button><button class="btn ghost big" onClick=${close}>Cancel</button></div>`}
   </div></div>`;
 }
 
@@ -962,6 +1072,7 @@ function NeedActions({ ctx, n }) {
 }
 function Overview({ ctx }) {
   const [filter, setFilter] = useState('needs');
+  const [assign, setAssign] = useState(false);
   const [team, setTeam] = useState(null);
   const [summary, setSummary] = useState(null);
   const td = today(), ws = weekStart(), we = weekEnd();
@@ -999,6 +1110,8 @@ function Overview({ ctx }) {
     ${summary ? html`<div class="summary" role="status"><div class="h"><span>${I.spark} All departments, this week</span><button class="iconbtn" aria-label="Close summary" onClick=${() => setSummary(null)}>✕</button></div>
       ${summary.loading ? html`<span class="muted">Reading tasks and updates…</span>` : summary.error ? html`<span class="err">${summary.error}</span>` : html`<ol>${summary.lines.map((l) => html`<li>${l}</li>`)}</ol>`}</div>` : ''}
     <div class="figs" role="tablist">${figs.map(([k, n, l]) => html`<button role="tab" aria-selected=${filter === k} class=${'fig' + (filter === k ? ' on' : '')} onClick=${() => setFilter(k)}><b>${n}</b><span>${l}</span></button>`)}</div>
+    ${(() => { const mineOpen = open.filter((t) => t.owner_id === ctx.me.id && !t.is_private); const depts = [...new Set(mineOpen.map((t) => t.department_id))].filter((d) => ctx.members.some((m) => m.department_id === d && m.person_id !== ctx.me.id)); return html`<${AiTools} ctx=${ctx} onOwners=${mineOpen.length >= 5 && depts.length ? () => setAssign(depts) : null} />`; })()}
+    ${assign ? html`<${OwnerSuggest} ctx=${ctx} deptIds=${assign} close=${() => setAssign(false)} />` : ''}
     <div class="cols page">
       <div class="panel">
         ${filter === 'needs' ? html`<div class="ph"><h2>Needs you</h2>${undated.length ? html`<a href="#all?status=nodate" class="linkbtn" style="font-size:13px">${undated.length} need priority and date</a>` : ''}</div>
@@ -1023,6 +1136,163 @@ function Overview({ ctx }) {
     </div>`;
 }
 
+/* ---------- AI helpers and features ---------- */
+async function aiCall(mode, body = {}) {
+  try {
+    const { data, error } = await sb.functions.invoke('ai', { body: { mode, ...body } });
+    if (error) return { error: 'AI request failed. Try again.' };
+    return data || { error: 'No response.' };
+  } catch (_) { return { error: 'AI request failed. Try again.' }; }
+}
+const looksLikeQuestion = (q) => /\?\s*$/.test(q) || /^(what|which|who|whose|how|when|why|is|are|any|show|list|give|tell)\b/i.test(q.trim());
+
+/* AI tools strip (Overview) */
+function AiTools({ ctx, onOwners }) {
+  const [sheet, setSheet] = useState(null);
+  const [briefFor, setBriefFor] = useState('');
+  return html`<div class="aitools">
+    <span class="lab">${I.spark} AI</span>
+    ${onOwners ? html`<button class="btn" onClick=${onOwners}>Suggest owners</button>` : ''}
+    <button class="btn" onClick=${() => setSheet({ k: 'cleanup' })}>Find duplicates and dead tasks</button>
+    <button class="btn" onClick=${() => setSheet({ k: 'notes' })}>Meeting notes to tasks</button>
+    <label class="btn" style="padding-right:4px">Prep 1:1
+      <select aria-label="Prep a 1:1 brief for" value=${briefFor} onChange=${(e) => { if (e.target.value) { setSheet({ k: 'brief', person: e.target.value }); setBriefFor(''); } }} style="border:none;background:transparent;font:inherit;color:var(--muted);max-width:120px">
+        <option value="">with…</option>${ctx.people.filter((p) => p.id !== ctx.me.id).map((p) => html`<option value=${p.id}>${p.name}</option>`)}
+      </select></label>
+    ${sheet?.k === 'cleanup' ? html`<${CleanupSheet} ctx=${ctx} close=${() => setSheet(null)} />` : ''}
+    ${sheet?.k === 'notes' ? html`<${NotesSheet} ctx=${ctx} close=${() => setSheet(null)} />` : ''}
+    ${sheet?.k === 'brief' ? html`<${BriefSheet} ctx=${ctx} personId=${sheet.person} close=${() => setSheet(null)} />` : ''}
+  </div>`;
+}
+
+/* 1. duplicates and dead tasks */
+function CleanupSheet({ ctx, deptId, close }) {
+  const [res, setRes] = useState(null);
+  const [keep, setKeep] = useState({});
+  const [closeSel, setCloseSel] = useState({});
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { aiCall('cleanup', deptId ? { department_id: deptId } : {}).then((r) => {
+    if (r.error) return setRes(r);
+    const k = {}; const c = {};
+    r.duplicates = r.duplicates || []; r.stale = r.stale || [];
+    r.duplicates.forEach((g, i) => { const ts = g.map((id) => ctx.tasks.find((t) => t.id === id)).filter(Boolean).sort((a, b) => (b.last_update_at || '').localeCompare(a.last_update_at || '') || (a.due_date ? -1 : 1)); if (ts[0]) { k[i] = ts[0].id; ts.slice(1).forEach((t) => (c[t.id] = true)); } });
+    r.stale.forEach((s) => (c[s.task_id] = true));
+    setKeep(k); setCloseSel(c); setRes(r);
+  }); }, []);
+  const toClose = Object.keys(closeSel).filter((id) => closeSel[id] && !Object.values(keep).includes(id));
+  async function apply() {
+    setBusy(true);
+    const mergeNotes = [];
+    (res.duplicates || []).forEach((g, i) => { const kept = ctx.tasks.find((t) => t.id === keep[i]); g.filter((id) => id !== keep[i] && toClose.includes(id)).forEach((id) => mergeNotes.push({ task_id: id, author_id: ctx.me.id, body: `Closed as a duplicate of “${kept?.title}”` })); });
+    if (mergeNotes.length) await sb.from('task_updates').insert(mergeNotes);
+    if (toClose.length) await sb.from('tasks').update({ status: 'done', completed_at: new Date().toISOString() }).in('id', toClose);
+    setBusy(false); ctx.setToast({ text: `${toClose.length} tasks closed` }); ctx.load(); close();
+  }
+  const T = (id) => ctx.tasks.find((t) => t.id === id);
+  const meta = (t) => `${ctx.dept(t.department_id)?.name}, ${first(ctx.person(t.owner_id)?.name)}${t.task_list_id ? `, ${ctx.list(t.task_list_id)?.name}` : ''}`;
+  return html`<div class="scrim" onClick=${close}><div class="sheet wide" role="dialog" aria-modal="true" aria-label="Clean up tasks" onClick=${(e) => e.stopPropagation()}>
+    <div class="top"><b class="sheettitle">${I.spark} Duplicates and dead tasks</b><button class="btn ghost" onClick=${close}>Close</button></div>
+    ${!res ? html`<p class="note">Reading ${deptId ? 'this department' : 'all open tasks'}… this takes up to half a minute.</p>` : res.error ? html`<p class="err">${res.error}</p>` : html`
+      <p class="note">Nothing changes until you apply. Closed tasks move to Done, so they can be reopened.</p>
+      <h3 class="sub3">Likely duplicates <span class="muted">${res.duplicates.length} groups</span></h3>
+      ${res.duplicates.length ? res.duplicates.map((g, i) => html`<div class="dupgroup">${g.map((id) => { const t = T(id); return t ? html`<label class="duprow">
+        <input type="radio" name=${'keep' + i} checked=${keep[i] === id} onChange=${() => { setKeep({ ...keep, [i]: id }); setCloseSel({ ...closeSel, [id]: false, ...Object.fromEntries(g.filter((x) => x !== id).map((x) => [x, true])) }); }} />
+        <span class="t">${t.title}<span class="m">${meta(t)}</span></span><span class=${'kc ' + (keep[i] === id ? 'k' : 'c')}>${keep[i] === id ? 'Keep' : 'Close'}</span></label>` : ''; })}</div>`) : html`<p class="note">None found.</p>`}
+      <h3 class="sub3">Probably dead <span class="muted">${res.stale.length}</span></h3>
+      ${res.stale.length ? res.stale.map((s) => { const t = T(s.task_id); return t ? html`<label class="duprow"><input type="checkbox" checked=${!!closeSel[t.id]} onChange=${() => setCloseSel({ ...closeSel, [t.id]: !closeSel[t.id] })} /><span class="t">${t.title}<span class="m">${meta(t)}, ${s.why}</span></span><span class=${'kc ' + (closeSel[t.id] ? 'c' : 'k')}>${closeSel[t.id] ? 'Close' : 'Keep'}</span></label>` : ''; }) : html`<p class="note">None found.</p>`}
+      <div class="actions" style="margin-top:8px"><button class="btn primary big" disabled=${busy || !toClose.length} onClick=${apply}>${busy ? 'Closing…' : `Close ${toClose.length} tasks`}</button><button class="btn ghost big" onClick=${close}>Cancel</button></div>`}
+  </div></div>`;
+}
+
+/* 2. meeting notes to tasks */
+function NotesSheet({ ctx, deptId, initialText, close }) {
+  const [text, setText] = useState(initialText || '');
+  const [rows, setRows] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const ownerDept = (pid) => ctx.ownerDept(pid);
+  async function extract() {
+    setBusy(true); setErr('');
+    const r = await aiCall('extract', { text, department_id: deptId || null });
+    setBusy(false);
+    if (r.error) return setErr(r.error);
+    if (!r.items?.length) return setErr('No action items found in those notes.');
+    setRows(r.items.map((x) => ({ ...x, on: true, owner_id: x.owner_id || ctx.me.id, department_id: x.department_id || ownerDept(x.owner_id) || deptId || ctx.myDepts[0] || ctx.depts[0].id })));
+  }
+  useEffect(() => { if (initialText) extract(); }, []);
+  const upd = (i, k, v) => setRows((rs) => rs.map((r, j) => (j === i ? { ...r, [k]: v, ...(k === 'owner_id' && !deptId ? { department_id: ownerDept(v) || r.department_id, task_list_id: null } : {}) } : r)));
+  const ready = (rows || []).filter((r) => r.on && r.title.trim() && r.due_date);
+  async function add() {
+    setBusy(true);
+    const { error } = await sb.from('tasks').insert(ready.map((r) => ({ title: r.title.trim(), owner_id: r.owner_id, due_date: r.due_date, priority: r.priority || 'P2', department_id: r.department_id, task_list_id: r.task_list_id || null, created_by: ctx.me.id, source: 'app' })));
+    setBusy(false);
+    if (error) return setErr(error.message);
+    ctx.setToast({ text: `${ready.length} tasks added` }); ctx.load(); close();
+  }
+  return html`<div class="scrim" onClick=${close}><div class="sheet wide" role="dialog" aria-modal="true" aria-label="Meeting notes to tasks" onClick=${(e) => e.stopPropagation()}>
+    <div class="top"><b class="sheettitle">${I.spark} Meeting notes to tasks</b><button class="btn ghost" onClick=${close}>Close</button></div>
+    ${!rows ? html`
+      <p class="note">Paste notes, a transcript or a WhatsApp summary. Each action becomes a task with an owner (by name, or by who handles that area) and a date if one is mentioned.</p>
+      <textarea class="field" style="min-height:220px" aria-label="Meeting notes" placeholder="Franchise Sales review, 29 Oct&#10;- Vivek to call back all Jaipur leads by Friday&#10;- Soumay: fix call centre script, urgent&#10;- Expo stall budget to be finalised next week" value=${text} onInput=${(e) => setText(e.target.value)}></textarea>
+      ${err ? html`<p class="err">${err}</p>` : ''}
+      <div class="actions"><button class="btn primary big" disabled=${busy || text.trim().length < 5} onClick=${extract}>${busy ? 'Reading notes…' : 'Find action items'}</button></div>`
+    : html`
+      <p class="note">${rows.length} action items found. Check owners and dates; rows without a deadline are skipped.</p>
+      ${rows.map((r, i) => html`<div class="bulkrow notesrow">
+        <input type="checkbox" class="cbox" style="opacity:1" checked=${r.on} aria-label="Include" onChange=${() => upd(i, 'on', !r.on)} />
+        <input class="field" aria-label="Task" value=${r.title} onInput=${(e) => upd(i, 'title', e.target.value)} />
+        <select class="field" aria-label="Owner" onChange=${(e) => upd(i, 'owner_id', e.target.value)}>${ctx.people.map((p) => html`<option value=${p.id} selected=${r.owner_id === p.id}>${p.name}</option>`)}</select>
+        <input type="date" class=${'field' + (r.due_date ? '' : ' missing')} aria-label="Deadline" value=${r.due_date} onChange=${(e) => upd(i, 'due_date', e.target.value)} />
+        <select class="field" aria-label="Priority" onChange=${(e) => upd(i, 'priority', e.target.value)}>${['P1', 'P2', 'P3'].map((p) => html`<option value=${p} selected=${r.priority === p}>${PRI[p]}</option>`)}</select>
+        <select class="field" aria-label="Department" onChange=${(e) => upd(i, 'department_id', e.target.value)}>${ctx.depts.map((d) => html`<option value=${d.id} selected=${r.department_id === d.id}>${d.name}</option>`)}</select>
+      </div>`)}
+      ${err ? html`<p class="err">${err}</p>` : ''}
+      <div class="actions"><button class="btn primary big" disabled=${busy || !ready.length} onClick=${add}>Add ${ready.length} tasks</button><button class="btn ghost big" onClick=${() => setRows(null)}>Back to notes</button></div>`}
+  </div></div>`;
+}
+
+/* 3. prep briefs */
+function BriefSheet({ ctx, personId, deptId, close }) {
+  const [res, setRes] = useState(null);
+  useEffect(() => { aiCall('brief', personId ? { person_id: personId } : { department_id: deptId }).then(setRes); }, []);
+  const name = personId ? ctx.person(personId)?.name : ctx.dept(deptId)?.name;
+  return html`<div class="scrim" onClick=${close}><div class="sheet" role="dialog" aria-modal="true" aria-label="Prep brief" onClick=${(e) => e.stopPropagation()}>
+    <div class="top"><b class="sheettitle">${I.spark} ${personId ? `1:1 with ${name}` : `${name} review`}</b><button class="btn ghost" onClick=${close}>Close</button></div>
+    ${personId && ctx.person(personId)?.handles ? html`<p class="note">${ctx.person(personId).handles}</p>` : ''}
+    ${!res ? html`<p class="note">Reading tasks and updates…</p>` : res.error ? html`<p class="err">${res.error}</p>` : html`
+      <div class="figs" style="padding:0;grid-template-columns:repeat(4,minmax(0,1fr))">${[['Open', res.counts?.open ?? 0], ['Late', res.counts?.late ?? 0], ['Blocked', res.counts?.blocked ?? 0], ['Done, 14 days', res.counts?.done ?? 0]].map(([l, n]) => html`<div class="fig"><b>${n}</b><span>${l}</span></div>`)}</div>
+      <div><span class="lbl">Where things stand</span><ul class="brief">${(res.lines || []).map((l) => html`<li>${l}</li>`)}</ul></div>
+      <div><span class="lbl">Ask</span><ul class="brief q">${(res.questions || []).map((l) => html`<li>${l}</li>`)}</ul></div>
+      <div class="actions"><a class="btn" href=${'#all?q=' + encodeURIComponent(personId ? name : name)} onClick=${close}>See ${personId ? 'their' : 'the'} tasks</a>${personId ? html`<button class="btn" onClick=${() => { navigator.clipboard?.writeText(`1:1 with ${name}\n${res.lines.map((l) => '- ' + l).join('\n')}\nAsk:\n${res.questions.map((l) => '- ' + l).join('\n')}`); ctx.setToast({ text: 'Copied' }); }}>Copy</button>` : ''}</div>`}
+  </div></div>`;
+}
+
+/* 4. suggestions after an update */
+function Hints({ ctx, hint, done }) {
+  const { t, r } = hint;
+  const [left, setLeft] = useState(() => {
+    const out = [];
+    if (r.done) out.push({ k: 'done', label: 'Sounds finished. Mark done?' });
+    if (r.blocked) out.push({ k: 'blocked', label: `Mark blocked${r.waiting_on ? ` on ${first(ctx.person(r.waiting_on)?.name)}` : ''}${r.reason ? `: ${r.reason}` : ''}?` });
+    if (r.new_date) out.push({ k: 'date', label: `${ctx.canRedate(t) ? 'Move deadline' : 'Ask to move the deadline'} to ${fmtDate(r.new_date)}?` });
+    (r.new_tasks || []).forEach((x) => out.push({ k: 'task', title: x, label: `Add task: ${x}` }));
+    return out;
+  });
+  useEffect(() => { if (!left.length) done(); const tm = setTimeout(done, 15000); return () => clearTimeout(tm); }, [left.length]);
+  async function act(h) {
+    if (h.k === 'done') await ctx.done(t);
+    if (h.k === 'blocked') await ctx.update(t.id, { status: 'blocked', blocked_on_person_id: r.waiting_on || null, blocked_reason: r.reason || null }, 'Marked blocked');
+    if (h.k === 'date') {
+      if (ctx.canRedate(t)) await ctx.update(t.id, { due_date: r.new_date }, `Moved to ${fmtDate(r.new_date)}`);
+      else { await sb.from('date_change_requests').insert({ task_id: t.id, requested_by: ctx.me.id, current_due: t.due_date, proposed_due: r.new_date, reason: 'From update' }); ctx.setToast({ text: 'Date change requested' }); ctx.load(); }
+    }
+    if (h.k === 'task') { await sb.from('tasks').insert({ title: h.title, owner_id: t.owner_id, created_by: ctx.me.id, department_id: t.department_id, task_list_id: t.task_list_id, priority: 'P2', due_date: t.due_date || addDays(today(), 7), source: 'app' }); ctx.setToast({ text: 'Task added' }); ctx.load(); }
+    setLeft((l) => l.filter((x) => x !== h));
+  }
+  return html`<div class="hints" role="status"><div class="hh">${I.spark} From your update on “${t.title.slice(0, 50)}”<button class="iconbtn" aria-label="Dismiss" onClick=${done}>✕</button></div>
+    ${left.map((h) => html`<div class="hrow"><span>${h.label}</span><button class="btn primary" onClick=${() => act(h)}>Yes</button><button class="btn ghost" onClick=${() => setLeft((l) => l.filter((x) => x !== h))}>No</button></div>`)}
+  </div>`;
+}
 /* ---------- composer ---------- */
 function Composer({ ctx, deptHint, listHint }) {
   const [text, setText] = useState('');
@@ -1038,7 +1308,7 @@ function Composer({ ctx, deptHint, listHint }) {
   function onPaste(e) {
     const txt = e.clipboardData?.getData('text') || '';
     const lines = txt.split(/\r?\n/).map((s) => s.replace(/^\s*([-*•–]|\d+[.)])\s*/, '').trim()).filter(Boolean);
-    if (lines.length > 1) { e.preventDefault(); ctx.setSheet({ mode: 'bulk', lines: lines.slice(0, 30) }); }
+    if (lines.length > 1) { e.preventDefault(); ctx.setSheet({ mode: 'notes', text: txt, dept: deptHint }); }
   }
   async function submit(e) {
     e.preventDefault();
@@ -1082,6 +1352,7 @@ function Composer({ ctx, deptHint, listHint }) {
 function TaskSheet({ ctx, sheet, close }) {
   if (sheet.mode === 'new') return html`<${NewTask} ctx=${ctx} pre=${sheet.prefill || {}} close=${close} />`;
   if (sheet.mode === 'bulk') return html`<${BulkAdd} ctx=${ctx} lines=${sheet.lines} close=${close} />`;
+  if (sheet.mode === 'notes') return html`<${NotesSheet} ctx=${ctx} deptId=${sheet.dept} initialText=${sheet.text} close=${close} />`;
   return html`<${TaskPanel} key=${sheet.id} ctx=${ctx} id=${sheet.id} close=${close} />`;
 }
 
@@ -1183,6 +1454,7 @@ function TaskPanel({ ctx, id, close }) {
     const { error } = await sb.from('task_updates').insert({ task_id: t.id, author_id: ctx.me.id, body });
     if (error) return setErr(error.message);
     setUpd(''); loadUpdates(); ctx.load();
+    ctx.readUpdate(t, body);
   }
   async function requestDate() {
     if (!ask?.date) return setErr('Pick the new date.');
