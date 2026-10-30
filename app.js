@@ -57,9 +57,11 @@ function parseQuick(s) {
 /* ---------- small helpers ---------- */
 const initials = (n = '') => n.split(' ').filter(Boolean).slice(0, 2).map((w) => w[0]).join('').toUpperCase();
 const first = (n = '') => n.split(' ')[0];
-const isLate = (t) => t.status !== 'done' && t.due_date && t.due_date < today();
-const needsDate = (t) => t.status !== 'done' && (!t.due_date || !t.priority);
-const isQuiet = (t) => t.status !== 'done' && diff((t.last_update_at || t.created_at).slice(0, 10), today()) >= 7;
+const isClosed = (t) => t.status === 'done' || t.status === 'cancelled';
+const isActive = (t) => t.status === 'open' || t.status === 'blocked';
+const isLate = (t) => isActive(t) && t.due_date && t.due_date < today();
+const needsDate = (t) => isActive(t) && (!t.due_date || !t.priority);
+const isQuiet = (t) => isActive(t) && diff((t.last_update_at || t.created_at).slice(0, 10), today()) >= 7;
 const hash = (s = '') => { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return Math.abs(h); };
 const AV = ['#FFE680', '#BFE6F7', '#F7D2D3', '#D9CCF4', '#D6F0E2', '#FFE0C2', '#E3E6EE', '#F5D7EC'];
 const avColor = (id) => AV[hash(id || '') % AV.length];
@@ -115,6 +117,8 @@ function parseQuery(text, ctx) {
   if (take(/\s(late|overdue)\s/)) f.status = 'late';
   else if (take(/\sblocked\s/)) f.status = 'blocked';
   else if (take(/\s(done|completed)\s/)) f.status = 'done';
+  else if (take(/\s(on hold|paused|held|hold)\s/)) f.status = 'hold';
+  else if (take(/\s(cancelled|canceled|dropped)\s/)) f.status = 'cancelled';
   else if (take(/\s(no date|needs date|undated|no priority)\s/)) f.status = 'nodate';
   const p = take(/\s(p1|urgent|p2|normal|p3|low)\s/);
   if (p) f.prio = { p1: 'P1', urgent: 'P1', p2: 'P2', normal: 'P2', p3: 'P3', low: 'P3' }[p[1]];
@@ -139,9 +143,12 @@ function matchQuery(t, f, ctx) {
   const td = today();
   if (f.status === 'late' && !isLate(t)) return false;
   if (f.status === 'blocked' && t.status !== 'blocked') return false;
-  if (f.status === 'done' && t.status !== 'done') return false;
+  if (f.status === 'done' && !isClosed(t)) return false;
+  if (f.status === 'hold' && t.status !== 'on_hold') return false;
+  if (f.status === 'cancelled' && t.status !== 'cancelled') return false;
   if (f.status === 'nodate' && !needsDate(t)) return false;
-  if (f.status !== 'done' && t.status === 'done') return false;
+  if (!['done', 'cancelled'].includes(f.status) && isClosed(t)) return false;
+  if (!f.status && t.status === 'on_hold') return false;
   if (f.owner && t.owner_id !== f.owner) return false;
   if (f.dept && t.department_id !== f.dept) return false;
   if (f.list && t.task_list_id !== f.list) return false;
@@ -158,7 +165,7 @@ function describeQuery(f, ctx) {
   if (f.owner) parts.push(ctx.person(f.owner)?.name);
   if (f.dept) parts.push(ctx.dept(f.dept)?.name);
   if (f.list) parts.push(ctx.list(f.list)?.name);
-  if (f.status) parts.push({ late: 'late', blocked: 'blocked', done: 'done', nodate: 'needs date' }[f.status]);
+  if (f.status) parts.push({ late: 'late', blocked: 'blocked', done: 'done', nodate: 'needs date', hold: 'on hold', cancelled: 'cancelled' }[f.status]);
   if (f.prio) parts.push(PRI[f.prio]);
   if (f.quiet) parts.push('no update in 7 days');
   if (f.when) parts.push({ today: 'due today', tomorrow: 'due tomorrow', week: 'due this week' }[f.when]);
@@ -211,8 +218,8 @@ function App() {
         sb.from('departments').select('*').eq('active', true).order('sort_order'),
         sb.from('department_members').select('*'),
         sb.from('task_lists').select('*').eq('active', true).order('name'),
-        sb.from('v_tasks').select('*').neq('status', 'done').limit(5000),
-        sb.from('v_tasks').select('*').eq('status', 'done').gte('completed_at', since).limit(2000),
+        sb.from('v_tasks').select('*').not('status', 'in', '(done,cancelled)').limit(5000),
+        sb.from('v_tasks').select('*').in('status', ['done', 'cancelled']).gte('completed_at', since).limit(2000),
         sb.from('date_change_requests').select('*').eq('status', 'pending'),
       ]);
       const err = [p, d, m, l, t, done, dcr].find((r) => r.error);
@@ -285,7 +292,7 @@ function makeCtx({ me, data, setData, load, setSheet, setToast, setPalette, pins
   const canEdit = (t) => isAdmin || isHead(t.department_id) || t.owner_id === me.id || t.created_by === me.id;
   const canOwner = (t) => isAdmin || isHead(t.department_id) || t.created_by === me.id;
   const canManageLists = (d) => isAdmin || isHead(d);
-  const open = () => tasks.filter((t) => t.status !== 'done');
+  const open = () => tasks.filter((t) => !isClosed(t));
   const mine = () => tasks.filter((t) => t.owner_id === me.id);
   const ownerDept = (pid) => members.find((m) => m.person_id === pid)?.department_id;
 
@@ -299,7 +306,16 @@ function makeCtx({ me, data, setData, load, setSheet, setToast, setPalette, pins
     return true;
   }
   const save = async (t, fields, onSaved) => { if (await update(t.id, fields, null)) onSaved?.(t.id); };
-  const done = (t) => update(t.id, { status: 'done', completed_at: new Date().toISOString() }, 'Marked done', { status: 'open', completed_at: null });
+  const done = (t) => update(t.id, { status: 'done', completed_at: new Date().toISOString() }, 'Marked done', { status: t.status, completed_at: null });
+  async function hold(t, reason) {
+    if (reason) await sb.from('task_updates').insert({ task_id: t.id, author_id: me.id, body: `On hold: ${reason}` });
+    await update(t.id, { status: 'on_hold' }, 'Put on hold', { status: t.status }); load();
+  }
+  async function cancel(t, reason) {
+    if (!reason) { reason = (prompt(`Why cancel “${t.title}”?`) || '').trim(); if (!reason) return; }
+    await sb.from('task_updates').insert({ task_id: t.id, author_id: me.id, body: `Cancelled: ${reason}` });
+    await update(t.id, { status: 'cancelled', completed_at: new Date().toISOString() }, 'Cancelled', { status: t.status, completed_at: null }); load();
+  }
   const reopen = (t) => update(t.id, { status: 'open', completed_at: null }, 'Reopened');
 
   function needsYou() {
@@ -310,6 +326,7 @@ function makeCtx({ me, data, setData, load, setSheet, setToast, setPalette, pins
       if (t) out.push({ key: 'd' + r.id, kind: 'Date change', t, title: `${t.title} → ${shortDue(r.proposed_due)}`, who: `${first(person(r.requested_by)?.name)}, ${dept(t.department_id)?.name}${t.slip_count ? `, moved ${t.slip_count}× already` : ''}`, req: r });
     }
     for (const t of open()) {
+      if (t.status === 'on_hold') continue;
       const who = `${first(person(t.owner_id)?.name)}, ${dept(t.department_id)?.name}`;
       if (t.owner_id === me.id && t.request_status === 'pending') out.push({ key: 'r' + t.id, kind: 'Request', t, title: t.title, who: `From ${first(person(t.created_by)?.name)}`, request: true });
       else if (t.status === 'blocked' && diff(t.updated_at.slice(0, 10), td) >= 3) out.push({ key: 'b' + t.id, kind: 'Blocked', t, title: t.title, who: t.blocked_on_person_id ? `Waiting on ${first(person(t.blocked_on_person_id)?.name)}, ${diff(t.updated_at.slice(0, 10), td)}d` : who });
@@ -383,7 +400,7 @@ function makeCtx({ me, data, setData, load, setSheet, setToast, setPalette, pins
   const removePin = (name) => { const p = pins.filter((x) => x.name !== name); setPins(p); savePins(p); };
 
   return { me, data, people, depts, members, lists, tasks, dcr, person, dept, list, deptColor, isAdmin, myDepts, headDepts, isHead, canSeeStats, canDecide, canRedate, canEdit, canOwner, canManageLists,
-    open, mine, ownerDept, update, save, done, reopen, needsYou, decideDate, approveOther, decideRequest, nudge, readUpdate, createList, moveList, renameList, deleteList, moveTo, load, setToast, setSheet, setPalette,
+    open, mine, ownerDept, update, save, done, reopen, hold, cancel, needsYou, decideDate, approveOther, decideRequest, nudge, readUpdate, createList, moveList, renameList, deleteList, moveTo, load, setToast, setSheet, setPalette,
     openTask: (t) => setSheet({ mode: 'edit', id: t.id }),
     newTask: (p = {}) => { const ov = {}; if (p.department_id) ov.department_id = p.department_id; if (p.task_list_id) ov.task_list_id = p.task_list_id; if (p.owner_id) ov.owner_id = p.owner_id; document.dispatchEvent(new CustomEvent('bs-compose', { detail: { ov } })); }, pins, addPin, removePin };
 }
@@ -412,11 +429,10 @@ function useDrop(onDrop, onList) {
     },
   }];
 }
-function SideDept({ ctx, d, route, view }) {
+function SideDept({ ctx, d, route, view, open, setOpen }) {
   const activeDept = view === 'dept' && route.dept === d.id;
-  const [open, setOpen] = useState(activeDept);
-  useEffect(() => { if (activeDept) setOpen(true); }, [activeDept]);
-  const openTasks = ctx.open().filter((t) => t.department_id === d.id);
+  useEffect(() => { if (activeDept && !open) setOpen(true); }, [activeDept]);
+  const openTasks = ctx.open().filter((t) => t.department_id === d.id && isActive(t));
   const lists = ctx.lists.filter((l) => l.department_id === d.id).map((l) => ({ ...l, n: openTasks.filter((t) => t.task_list_id === l.id).length })).sort((a, b) => b.n - a.n || a.name.localeCompare(b.name));
   const [over, dropProps] = useDrop((ids) => ctx.moveTo(ids, { department_id: d.id, task_list_id: null }, `Moved to ${d.name}`), (lid) => { const l = ctx.list(lid); if (l && l.department_id !== d.id && confirm(`Move the list “${l.name}” and all its tasks to ${d.name}?`)) ctx.moveList(l, d.id); });
   return html`<div>
@@ -454,19 +470,22 @@ function ListMenu({ ctx, l }) {
 }
 function Sidebar({ ctx, view, route }) {
   const isAdmin = ctx.isAdmin;
+  const [openMap, setOpenMap] = useState(() => { try { return JSON.parse(localStorage.getItem('bs_side_open') || '{}'); } catch (_) { return {}; } });
+  const setOpenMapP = (m) => { setOpenMap(m); try { localStorage.setItem('bs_side_open', JSON.stringify(m)); } catch (_) {} };
   const myDepts = isAdmin ? ctx.depts : ctx.depts.filter((d) => ctx.myDepts.includes(d.id));
   const nav = [
     isAdmin && ['overview', 'Overview', ctx.needsYou().length],
-    ['mine', 'My tasks', ctx.mine().filter((t) => t.status !== 'done').length],
-    (isAdmin || ctx.headDepts.length) && ['all', 'All tasks', ctx.open().length],
+    ['mine', 'My tasks', ctx.mine().filter(isActive).length],
+    (isAdmin || ctx.headDepts.length) && ['all', 'All tasks', ctx.open().filter(isActive).length],
   ].filter(Boolean);
   return html`<nav class="side" aria-label="Main">
     <div class="brand"><span class="logo">${I.check}</span>BS Tasks</div>
     <button class="searchbtn" onClick=${() => ctx.setPalette(true)}>${I.search}Search or jump to<kbd>⌘K</kbd></button>
     ${nav.map(([id, l, n]) => html`<a class="nl" href=${'#' + id} aria-current=${view === id && !route.pin ? 'page' : null}><span class="ic">${I[id]}</span>${l}<span class="c">${n}</span></a>`)}
     ${ctx.pins.length ? html`<div class="sidelabel">Pinned</div>${ctx.pins.map((p) => html`<a class="nl" href=${'#all?pin=' + encodeURIComponent(p.name) + '&q=' + encodeURIComponent(p.query)} aria-current=${route.pin === p.name ? 'page' : null}><span class="ic">${I.pin}</span>${p.name}<span class="c">${ctx.tasks.filter((t) => matchQuery(t, parseQuery(p.query, ctx), ctx)).length}</span></a>`)}` : ''}
-    <div class="sidelabel">${isAdmin ? 'Departments' : 'My departments'}</div>
-    ${myDepts.map((d) => html`<${SideDept} key=${d.id} ctx=${ctx} d=${d} route=${route} view=${view} />`)}
+    <div class="sidelabel">${isAdmin ? 'Departments' : 'My departments'}
+      <span class="sidetools"><button class="linkbtn" onClick=${() => setOpenMapP(Object.fromEntries(myDepts.map((d) => [d.id, true])))}>Expand</button><button class="linkbtn" onClick=${() => setOpenMapP({})}>Collapse</button></span></div>
+    ${myDepts.map((d) => html`<${SideDept} key=${d.id} ctx=${ctx} d=${d} route=${route} view=${view} open=${!!openMap[d.id]} setOpen=${(v) => setOpenMapP({ ...openMap, [d.id]: v })} />`)}
     <div class="grow"></div>
     <div class="who"><span>${ctx.me.name}</span><button class="linkbtn" style="font-size:12.5px" onClick=${() => sb.auth.signOut()}>Sign out</button></div>
   </nav>`;
@@ -552,26 +571,26 @@ function PrioritySlider({ value, onChange, disabled, inPanel, always }) {
     ${PORDER.map((p) => html`<span class=${'seg' + (cur === p ? ' on' + (p === 'P2' ? ' p2' : '') : '')}>${PRI[p]}</span>`)}
   </div>`;
 }
-const SORDER = ['open', 'blocked', 'done'];
-const SLABEL = { open: 'In progress', blocked: 'Blocked', done: 'Done' };
-const STHUMB = { open: 'var(--ink)', blocked: 'var(--late)', done: 'var(--done)' };
+const SORDER = ['open', 'blocked', 'on_hold', 'done'];
+const SLABEL = { open: 'In progress', blocked: 'Blocked', on_hold: 'On hold', done: 'Done' };
+const STHUMB = { open: 'var(--ink)', blocked: 'var(--late)', on_hold: 'var(--faint)', done: 'var(--done)' };
 function StatusSlider({ value, onChange }) {
   const ref = useRef();
   const [drag, setDrag] = useState(null);
   const cur = drag ?? value;
   const idx = SORDER.indexOf(cur);
-  const pick = (x) => { const r = ref.current.getBoundingClientRect(); return SORDER[Math.max(0, Math.min(2, Math.floor(((x - r.left) / r.width) * 3)))]; };
-  return html`<div ref=${ref} class="slider inpanel status" role="slider" tabindex="0" aria-label="Status" aria-valuemin="1" aria-valuemax="3" aria-valuenow=${idx + 1} aria-valuetext=${SLABEL[cur]}
+  const pick = (x) => { const r = ref.current.getBoundingClientRect(); return SORDER[Math.max(0, Math.min(3, Math.floor(((x - r.left) / r.width) * 4)))]; };
+  return html`<div ref=${ref} class="slider inpanel status" style="grid-template-columns:repeat(4,1fr)" role="slider" tabindex="0" aria-label="Status" aria-valuemin="1" aria-valuemax="4" aria-valuenow=${idx + 1} aria-valuetext=${SLABEL[cur]}
     onPointerDown=${(e) => { e.preventDefault(); ref.current.setPointerCapture?.(e.pointerId); setDrag(pick(e.clientX)); }}
     onPointerMove=${(e) => drag !== null && setDrag(pick(e.clientX))}
     onPointerUp=${() => { if (drag !== null) { onChange(drag); setDrag(null); } }}
-    onKeyDown=${(e) => { const i = SORDER.indexOf(value); if (e.key === 'ArrowRight') { e.preventDefault(); onChange(SORDER[Math.min(2, i + 1)]); } if (e.key === 'ArrowLeft') { e.preventDefault(); onChange(SORDER[Math.max(0, i - 1)]); } }}>
-    <span class="thumb" style=${`left:calc(${idx * 33.33}% + 2px);background:${STHUMB[cur]}`}></span>
+    onKeyDown=${(e) => { const i = SORDER.indexOf(value); if (e.key === 'ArrowRight') { e.preventDefault(); onChange(SORDER[Math.min(3, i + 1)]); } if (e.key === 'ArrowLeft') { e.preventDefault(); onChange(SORDER[Math.max(0, i - 1)]); } }}>
+    <span class="thumb" style=${`left:calc(${Math.max(0, idx) * 25}% + 2px);width:calc(25% - 4px);background:${STHUMB[cur] || 'var(--ink)'}`}></span>
     ${SORDER.map((v) => html`<span class=${'seg' + (cur === v ? ' on' + (v === 'open' ? ' p2' : '') : '')}>${SLABEL[v]}</span>`)}
   </div>`;
 }
 function QuickUpdate({ ctx, t, close }) {
-  const [status, setStatus] = useState(t.status);
+  const [status, setStatus] = useState(SORDER.includes(t.status) ? t.status : 'open');
   const [text, setText] = useState('');
   const [on, setOn] = useState(t.blocked_on_person_id || '');
   const [busy, setBusy] = useState(false);
@@ -590,21 +609,23 @@ function QuickUpdate({ ctx, t, close }) {
     if (status !== t.status || (status === 'blocked' && (body || on !== (t.blocked_on_person_id || '')))) {
       const fields = status === 'done' ? { status: 'done', completed_at: new Date().toISOString() }
         : status === 'blocked' ? { status: 'blocked', blocked_reason: body || t.blocked_reason, blocked_on_person_id: on || null, completed_at: null }
+        : status === 'on_hold' ? { status: 'on_hold', completed_at: null }
         : { status: 'open', completed_at: null };
       await ctx.update(t.id, fields, null);
     }
     setBusy(false); close();
     if (body && status === t.status) ctx.readUpdate(t, body);
-    ctx.setToast({ text: status === 'done' ? 'Marked done' + (body ? ' with update' : '') : status === 'blocked' ? 'Marked blocked' : body ? 'Update posted' : 'Status changed' });
+    ctx.setToast({ text: status === 'done' ? 'Marked done' + (body ? ' with update' : '') : status === 'blocked' ? 'Marked blocked' : status === 'on_hold' ? 'Put on hold' : body ? 'Update posted' : 'Status changed' });
     ctx.load();
   }
-  const ph = status === 'blocked' ? 'What is it waiting on?' : status === 'done' ? 'Closing note (optional)' : 'What’s the latest? e.g. “Draft shared with Aviral, final by Fri”';
+  const ph = status === 'blocked' ? 'What is it waiting on?' : status === 'done' ? 'Closing note (optional)' : status === 'on_hold' ? 'Why on hold? (optional)' : 'What’s the latest? e.g. “Draft shared with Aviral, final by Fri”';
   return html`<div class="qupd" onKeyDown=${(e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } }}>
     <${StatusSlider} value=${status} onChange=${setStatus} />
     <input ref=${inRef} class="field" aria-label="Update" placeholder=${ph} value=${text} onInput=${(e) => setText(e.target.value)} onKeyDown=${(e) => e.key === 'Enter' && !busy && post()} />
     ${status === 'blocked' ? html`<select class="field on" aria-label="Waiting on" value=${on} onChange=${(e) => setOn(e.target.value)}><option value="">Waiting on…</option>${ctx.people.map((p) => html`<option value=${p.id} selected=${on === p.id}>${p.name}</option>`)}</select>` : ''}
     <button class="btn primary" disabled=${busy} onClick=${post}>Post</button>
     <button class="btn ghost" onClick=${close}>Esc</button>
+    <button class="btn ghost cancelbtn" onClick=${async () => { const r = text.trim() || (prompt(`Why cancel “${t.title}”?`) || '').trim(); if (!r) return; close(); await ctx.cancel(t, r); }}>Cancel task</button>
     ${t.last_update_body ? html`<span class="last">Last: “${t.last_update_body.slice(0, 80)}${t.last_update_body.length > 80 ? '…' : ''}” ${first(ctx.person(t.last_update_author)?.name)}, ${ago(t.last_update_at)}</span>` : ''}
   </div>`;
 }
@@ -628,7 +649,7 @@ function DateChip({ ctx, t, onSaved }) {
   const quick = [['Today', td], ['Tomorrow', addDays(td, 1)], ['Fri', parseQuick('fri')], ['Mon', nextDow(0)], ['+1 week', addDays(td, 7)]];
   const guess = parseQuick(txt);
   return html`<span class="anchor" ref=${ref}>
-    <button class=${'datec' + (isLate(t) ? ' late' : t.due_date ? '' : ' empty')} onClick=${() => (can ? setOpen(!open) : ctx.openTask(t))} title=${can ? 'Change deadline' : 'Ask the assigner for a new date'}>${I.cal}${t.status === 'done' ? 'Done' : shortDue(t.due_date)}</button>
+    <button class=${'datec' + (isLate(t) ? ' late' : t.due_date ? '' : ' empty')} onClick=${() => (can ? setOpen(!open) : ctx.openTask(t))} title=${can ? 'Change deadline' : 'Ask the assigner for a new date'}>${I.cal}${t.status === 'done' ? 'Done' : t.status === 'cancelled' ? 'Cancelled' : t.status === 'on_hold' ? 'On hold' : shortDue(t.due_date)}</button>
     ${open ? html`<div class="pop" role="dialog" aria-label="Deadline">
       <input class="field" placeholder="Type: fri, +7, 12 nov" value=${txt} aria-label="Type a date" onInput=${(e) => setTxt(e.target.value)} onKeyDown=${(e) => { if (e.key === 'Enter' && guess) set(guess); }} />
       ${txt ? html`<p class="note">${guess ? `Enter for ${fmtDate(guess)}` : 'Try fri, +7, 12 nov'}</p>` : ''}
@@ -683,17 +704,19 @@ function TRow({ ctx, t, sel, toggle, selecting, showList = true, showDept = fals
   if (showDept) tags.push(html`<span class="tag quiet"><span class="ddot" style=${'display:inline-block;margin-right:5px;background:' + ctx.deptColor(t.department_id)}></span>${ctx.dept(t.department_id)?.name}</span>`);
   if (showList && t.task_list_id) tags.push(html`<span class="tag">${ctx.list(t.task_list_id)?.name}</span>`);
   if (t.status === 'blocked') tags.push(html`<span class="tag warn">Blocked${t.blocked_on_person_id ? ` on ${first(ctx.person(t.blocked_on_person_id)?.name)}` : ''}</span>`);
+  if (t.status === 'on_hold') tags.push(html`<span class="tag">On hold</span>`);
+  if (t.status === 'cancelled') tags.push(html`<span class="tag">Cancelled</span>`);
   if (t.slip_count >= 2) tags.push(html`<span class="tag warn">Moved ${t.slip_count}×</span>`);
   if (!t.acknowledged_at && t.owner_id === ctx.me.id) tags.push(html`<span class="tag info">New</span>`);
   if (t.request_status === 'pending') tags.push(html`<span class="tag info">Request</span>`);
   if (t.from_department_id) tags.push(html`<span class="tag info">From ${ctx.dept(t.from_department_id)?.name}</span>`);
   if (t.is_private) tags.push(html`<span class="tag quiet">Private</span>`);
   const dragStart = (e) => { const ids = dragIds?.(t.id) || [t.id]; e.dataTransfer.setData('text/bs-task', ids.join(',')); e.dataTransfer.effectAllowed = 'move'; e.currentTarget.classList.add('dragging'); };
-  return html`<div class=${'trow' + (sel ? ' sel' : '') + (t.status === 'done' ? ' isdone' : '') + (qu ? ' open' : '')} draggable=${can && !qu} onDragStart=${dragStart} onDragEnd=${(e) => e.currentTarget.classList.remove('dragging')}
+  return html`<div class=${'trow' + (sel ? ' sel' : '') + (isClosed(t) ? ' isdone' : '') + (t.status === 'on_hold' ? ' held' : '') + (qu ? ' open' : '')} draggable=${can && !qu} onDragStart=${dragStart} onDragEnd=${(e) => e.currentTarget.classList.remove('dragging')}
     tabindex="-1" onKeyDown=${(e) => { if (e.key.toLowerCase() === 'u' && e.target === e.currentTarget && can) { e.preventDefault(); setQu(true); } }}>
     <span class="grip" aria-hidden="true" title="Drag to a list, a day or a department">⋮⋮</span>
     ${toggle ? html`<input type="checkbox" class="cbox" checked=${sel} onClick=${(e) => toggle(t.id, e.shiftKey)} aria-label=${'Select ' + t.title + '. Shift-click to select a range'} />` : ''}
-    <button class=${'ring' + (t.status === 'done' ? ' done' : t.status === 'blocked' ? ' blocked' : !t.priority ? ' none' : '')} disabled=${!can} aria-label=${(t.status === 'done' ? 'Reopen: ' : 'Mark done: ') + t.title} onClick=${() => (t.status === 'done' ? ctx.reopen(t) : ctx.done(t))}></button>
+    <button class=${'ring' + (t.status === 'done' ? ' done' : t.status === 'cancelled' ? ' cancelled' : t.status === 'on_hold' ? ' held' : t.status === 'blocked' ? ' blocked' : !t.priority ? ' none' : '')} disabled=${!can} aria-label=${(isClosed(t) ? 'Reopen: ' : t.status === 'on_hold' ? 'Resume: ' : 'Mark done: ') + t.title} onClick=${() => (isClosed(t) ? ctx.reopen(t) : t.status === 'on_hold' ? ctx.update(t.id, { status: 'open' }, 'Resumed') : ctx.done(t))}></button>
     <div class="tmain">
       <span class="ttitle" role="button" tabindex="0" onClick=${() => ctx.openTask(t)} onKeyDown=${(e) => e.key === 'Enter' && ctx.openTask(t)}
         onMouseEnter=${() => { timer.current = setTimeout(() => setPeek(true), 550); }} onMouseLeave=${() => { clearTimeout(timer.current); setPeek(false); }}>${t.title}</span>
@@ -722,8 +745,13 @@ function GroupHead({ label, icon, n, pct, hint, collapsed, onToggle, onDrop, onA
     ${onAdd ? html`<button class="iconbtn" aria-label=${'Add a task to ' + label} onClick=${(e) => { e.stopPropagation(); onAdd(); }}>${I.plus}</button>` : ''}
   </div>`;
 }
-function Groups({ ctx, groups, sel, setSel, rowProps = {} }) {
-  const [closed, setClosed] = useState({});
+function Groups({ ctx, groups, sel, setSel, rowProps = {}, storeKey = 'x' }) {
+  const sk = 'bs_closed_' + storeKey;
+  const [closed, setClosedRaw] = useState(() => { try { return JSON.parse(sessionStorage.getItem(sk) || '{}'); } catch (_) { return {}; } });
+  useEffect(() => { try { setClosedRaw(JSON.parse(sessionStorage.getItem(sk) || '{}')); } catch (_) { setClosedRaw({}); } }, [sk]);
+  const setClosed = (fn) => setClosedRaw((c) => { const n = typeof fn === 'function' ? fn(c) : fn; try { sessionStorage.setItem(sk, JSON.stringify(n)); } catch (_) {} return n; });
+  const labeled = groups.filter((g) => g.label != null);
+  const nClosed = labeled.filter((g) => closed[g.key]).length;
   const last = useRef(null);
   const selecting = sel && sel.length > 0;
   const dragIds = (id) => (sel && sel.includes(id) ? sel : [id]);
@@ -736,7 +764,11 @@ function Groups({ ctx, groups, sel, setSel, rowProps = {} }) {
     } else setSel((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
     last.current = id;
   } : null;
-  return html`<div class=${selecting ? 'selecting' : ''}>${groups.map((g) => { const ids = g.items.map((t) => t.id); const allSel = !!sel && ids.length > 0 && ids.every((x) => sel.includes(x)); return html`<div key=${g.key}>
+  return html`<div class=${selecting ? 'selecting' : ''}>
+    ${labeled.length > 1 ? html`<div class="gtools"><span>${labeled.length} groups</span>
+      <button class="linkbtn" disabled=${nClosed === labeled.length} onClick=${() => setClosed(Object.fromEntries(labeled.map((g) => [g.key, true])))}>Collapse all</button>
+      <button class="linkbtn" disabled=${nClosed === 0} onClick=${() => setClosed({})}>Expand all</button></div>` : null}
+    ${groups.map((g) => { const ids = g.items.map((t) => t.id); const allSel = !!sel && ids.length > 0 && ids.every((x) => sel.includes(x)); return html`<div key=${g.key}>
     ${g.label != null ? html`<${GroupHead} ...${g} collapsed=${closed[g.key]} onToggle=${() => setClosed((c) => ({ ...c, [g.key]: !c[g.key] }))}
       allSel=${allSel} onSelAll=${setSel ? () => setSel((s) => (allSel ? s.filter((x) => !ids.includes(x)) : [...new Set([...s, ...ids])])) : null} />` : ''}
     ${closed[g.key] ? '' : html`<${RowsLimited} ctx=${ctx} items=${g.items} sel=${sel} toggle=${toggle} dragIds=${dragIds} rowProps=${rowProps} />`}
@@ -756,7 +788,7 @@ function WeekStrip({ ctx, tasks, day, setDay }) {
 }
 function DayCell({ ctx, d, td, items, on, onClick }) {
   const [over, dropProps] = useDrop((ids) => ctx.moveTo(ids, { due_date: d }, `Due ${fmtDate(d)}`));
-  const bars = items.slice(0, 10).map((t) => t.status === 'done' ? ['14px', 'var(--done)'] : d < td ? ['10px', 'var(--late)'] : ['8px', 'var(--line)']);
+  const bars = items.filter((t) => t.status !== 'on_hold' && t.status !== 'cancelled').slice(0, 10).map((t) => t.status === 'done' ? ['14px', 'var(--done)'] : d < td ? ['10px', 'var(--late)'] : ['8px', 'var(--line)']);
   return html`<button class=${'day' + (d === td ? ' today' : '') + (on ? ' on' : '') + (over ? ' drop' : '')} onClick=${onClick} aria-pressed=${on} aria-label=${`${fmtDate(d)}, ${items.length} tasks`} ...${dropProps}>
     <span class="dh"><b>${dayName(d)} ${dayNum(d)}</b><span class="num">${items.length || ''}</span></span>
     <span class="bars" aria-hidden="true">${bars.map(([h, c]) => html`<i style=${`height:${h};background:${c}`}></i>`)}</span>
@@ -774,7 +806,9 @@ function BulkBar({ ctx, sel, clear }) {
     <${BulkPop} label="Owner">${(close) => html`<${OwnerList} ctx=${ctx} onPick=${(p) => { close(); apply({ owner_id: p.id, acknowledged_at: p.id === ctx.me.id ? new Date().toISOString() : null }, `Assigned to ${first(p.name)}`); }} />`}</${BulkPop}>
     <${BulkPop} label="Move">${(close) => html`<div class="opts">${ctx.depts.map((d) => html`<div><div class="opt" style="font-weight:600;cursor:default"><span class="ddot" style=${'background:' + ctx.deptColor(d.id)}></span>${d.name}<button class="linkbtn" style="margin-left:auto;font-size:12px" onClick=${() => { close(); apply({ department_id: d.id, task_list_id: null }, `Moved to ${d.name}`); }}>Move here</button></div>
       ${ctx.lists.filter((l) => l.department_id === d.id).map((l) => html`<button class="opt" style="padding-left:24px" onClick=${() => { close(); apply({ department_id: d.id, task_list_id: l.id }, `Moved to ${l.name}`); }}><${LIcon} name=${l.name} sm />${l.name}</button>`)}</div>`)}</div>`}</${BulkPop}>
-    <span class="bb"><button onClick=${() => apply({ status: 'done', completed_at: new Date().toISOString() }, 'Closed')}>Close</button></span>
+    <span class="bb"><button onClick=${() => apply({ status: 'done', completed_at: new Date().toISOString() }, 'Marked done')}>Done</button></span>
+    <span class="bb"><button onClick=${() => apply({ status: 'on_hold' }, 'Put on hold')}>Hold</button></span>
+    <span class="bb"><button onClick=${async () => { const r = (prompt(`Why cancel these ${sel.length} tasks?`) || '').trim(); if (!r) return; await sb.from('task_updates').insert(sel.map((id) => ({ task_id: id, author_id: ctx.me.id, body: `Cancelled: ${r}` }))); apply({ status: 'cancelled', completed_at: new Date().toISOString() }, 'Cancelled'); }}>Cancel</button></span>
     <span class="bb"><button onClick=${clear} aria-label="Clear selection">✕</button></span>
   </div>`;
 }
@@ -792,8 +826,8 @@ function BulkPop({ label, children }) {
 }
 
 /* ---------- All tasks ---------- */
-const STATUS_TABS = [['open', 'Open'], ['nodate', 'Needs date'], ['late', 'Late'], ['blocked', 'Blocked'], ['done', 'Done']];
-const byStatus = (t, s) => s === 'open' ? t.status !== 'done' : s === 'nodate' ? needsDate(t) : s === 'late' ? isLate(t) : s === 'blocked' ? t.status === 'blocked' : t.status === 'done';
+const STATUS_TABS = [['open', 'Open'], ['nodate', 'Needs date'], ['late', 'Late'], ['blocked', 'Blocked'], ['hold', 'On hold'], ['done', 'Done']];
+const byStatus = (t, s) => s === 'open' ? isActive(t) : s === 'nodate' ? needsDate(t) : s === 'late' ? isLate(t) : s === 'blocked' ? t.status === 'blocked' : s === 'hold' ? t.status === 'on_hold' : isClosed(t);
 const sortTasks = (a, b, sort) => sort === 'priority' ? (a.priority || 'P9').localeCompare(b.priority || 'P9') || (a.due_date || '9').localeCompare(b.due_date || '9')
   : sort === 'updated' ? (b.last_update_at || b.updated_at).localeCompare(a.last_update_at || a.updated_at)
   : (a.due_date || '9').localeCompare(b.due_date || '9') || (a.priority || 'P9').localeCompare(b.priority || 'P9');
@@ -808,8 +842,8 @@ function AllTasks({ ctx, route }) {
   useEffect(() => { setQ(route.q || ''); if (route.status) setTab(route.status); setSel([]); }, [route.q, route.status, route.pin]);
   const f = parseQuery(q, ctx);
   const qStatus = f.status;
-  const rows = ctx.tasks.filter((t) => (qStatus ? true : byStatus(t, tab)) && matchQuery(t, { ...f, status: f.status || (tab === 'done' ? 'done' : null) }, ctx) && (!day || t.due_date === day)).sort((a, b) => sortTasks(a, b, sort));
-  const counts = Object.fromEntries(STATUS_TABS.map(([k]) => [k, ctx.tasks.filter((t) => byStatus(t, k) && matchQuery(t, { ...f, status: k === 'done' ? 'done' : null }, ctx)).length]));
+  const rows = ctx.tasks.filter((t) => (qStatus ? true : byStatus(t, tab)) && matchQuery(t, { ...f, status: f.status || (tab === 'done' ? 'done' : tab === 'hold' ? 'hold' : null) }, ctx) && (!day || t.due_date === day)).sort((a, b) => sortTasks(a, b, sort));
+  const counts = Object.fromEntries(STATUS_TABS.map(([k]) => [k, ctx.tasks.filter((t) => byStatus(t, k) && matchQuery(t, { ...f, status: k === 'done' ? 'done' : k === 'hold' ? 'hold' : null }, ctx)).length]));
   const toggle = (id) => setSel((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
   const groups = [];
   if (group === 'none') groups.push({ key: 'all', label: null, items: rows });
@@ -857,7 +891,7 @@ function AllTasks({ ctx, route }) {
       <label class="ctl">Sort <select value=${sort} onChange=${(e) => setSort(e.target.value)}><option value="due">Deadline</option><option value="priority">Priority</option><option value="updated">Last update</option></select></label>
     </div>
     <div class="page">
-      ${rows.length ? html`<${Groups} ctx=${ctx} groups=${groups} sel=${sel} setSel=${setSel} rowProps=${{ showDept: group !== 'dept', showList: group !== 'list' }} />` : html`<p class="empty">No tasks match.</p>`}
+      ${rows.length ? html`<${Groups} ctx=${ctx} groups=${groups} sel=${sel} setSel=${setSel} storeKey=${'all-' + group} rowProps=${{ showDept: group !== 'dept', showList: group !== 'list' }} />` : html`<p class="empty">No tasks match.</p>`}
     </div>
     <${BulkBar} ctx=${ctx} sel=${sel} clear=${() => setSel([])} />`;
 }
@@ -879,7 +913,7 @@ function Dept({ ctx, route }) {
   if (!id) return html`<div class="topbar"><h1>Department</h1></div><p class="empty">You are not in a department yet.</p>`;
   const d = ctx.dept(id);
   const all = ctx.tasks.filter((t) => t.department_id === id);
-  const open = all.filter((t) => t.status !== 'done');
+  const open = all.filter(isActive);
   const inList = (t) => !listF || (listF === 'none' ? !t.task_list_id : t.task_list_id === listF);
   const shown = all.filter((t) => byStatus(t, tab) && inList(t) && (!day || t.due_date === day)).sort((a, b) => sortTasks(a, b, 'due'));
   const lists = ctx.lists.filter((l) => l.department_id === id);
@@ -938,13 +972,13 @@ function Dept({ ctx, route }) {
       ${lists.map((l) => html`<button class="lp" aria-pressed=${listF === l.id} onClick=${() => (location.hash = `dept?dept=${id}&list=${l.id}`)}>${l.name}</button>`)}
     </div>
     <div class="filterbar">
-      <div class="tabs" role="tablist">${[['open', 'Open'], ['late', 'Late'], ['blocked', 'Blocked'], ['nodate', 'Needs date'], ['done', 'Done']].map(([k, l]) => html`<button role="tab" class="tab" aria-selected=${tab === k} onClick=${() => setTab(k)}>${l}<span>${all.filter((t) => byStatus(t, k) && inList(t)).length}</span></button>`)}</div>
+      <div class="tabs" role="tablist">${[['open', 'Open'], ['late', 'Late'], ['blocked', 'Blocked'], ['nodate', 'Needs date'], ['hold', 'On hold'], ['done', 'Done']].map(([k, l]) => html`<button role="tab" class="tab" aria-selected=${tab === k} onClick=${() => setTab(k)}>${l}<span>${all.filter((t) => byStatus(t, k) && inList(t)).length}</span></button>`)}</div>
       ${day ? html`<span class="fchip"><span>Due</span><b>${fmtDate(day)}</b><button aria-label="Clear day" onClick=${() => setDay(null)}>×</button></span>` : ''}
       <span style="flex:1"></span>
       ${shown.length ? html`<button class="addfilter" onClick=${() => setSel(sel.length === shown.length ? [] : shown.map((t) => t.id))}>${sel.length === shown.length ? 'Clear selection' : `Select all ${shown.length}`}</button>` : ''}
     </div>
     ${lead && requests.length ? html`<div style="padding:12px 28px 0"><div class="panel"><div class="ph"><h2>Requests from other teams</h2></div>${requests.map((t) => html`<${TRow} key=${t.id} ctx=${ctx} t=${t} />`)}</div></div>` : ''}
-    <div class="page">${shown.length ? html`<${Groups} ctx=${ctx} groups=${groups} sel=${sel} setSel=${setSel} rowProps=${{ showList: false }} />` : html`<p class="empty">No tasks here.</p>`}</div>
+    <div class="page">${shown.length ? html`<${Groups} ctx=${ctx} groups=${groups} sel=${sel} setSel=${setSel} storeKey=${'dept-' + id + '-' + (listF || 'all')} rowProps=${{ showList: false }} />` : html`<p class="empty">No tasks here.</p>`}</div>
     <${BulkBar} ctx=${ctx} sel=${sel} clear=${() => setSel([])} />
     ${aiSheet === 'brief' ? html`<${BriefSheet} ctx=${ctx} deptId=${id} close=${() => setAiSheet(null)} />` : ''}
     ${aiSheet === 'notes' ? html`<${NotesSheet} ctx=${ctx} deptId=${id} close=${() => setAiSheet(null)} />` : ''}
@@ -1035,7 +1069,8 @@ function Mine({ ctx }) {
   const [day, setDay] = useState(null);
   const td = today(), we = weekEnd();
   const mine = ctx.mine();
-  const open = mine.filter((t) => t.status !== 'done' && !(t.snoozed_until && t.snoozed_until > td) && (!day || t.due_date === day));
+  const open = mine.filter((t) => isActive(t) && !(t.snoozed_until && t.snoozed_until > td) && (!day || t.due_date === day));
+  const held = mine.filter((t) => t.status === 'on_hold');
   const approvals = ctx.isAdmin ? [] : ctx.dcr.filter((r) => { const t = ctx.tasks.find((x) => x.id === r.task_id); return t && ctx.canDecide(t); });
   const waiting = ctx.open().filter((t) => t.blocked_on_person_id === ctx.me.id);
   const sorted = (a) => a.sort((x, y) => sortTasks(x, y, 'due'));
@@ -1046,13 +1081,14 @@ function Mine({ ctx }) {
     { key: 'k', label: 'This week', items: sorted(open.filter((t) => t.due_date > td && t.due_date <= we)) },
     { key: 'l', label: 'Later', items: sorted(open.filter((t) => t.due_date > we)) },
     { key: 'n', label: 'Needs priority and date', items: sorted(open.filter((t) => !t.due_date)) },
+    { key: 'h', label: 'On hold', items: held },
   ].filter((g) => g.items.length).map((g) => ({ ...g, n: g.items.length }));
   setNav(groups.flatMap((g) => g.items));
   return html`
     <div class="topbar"><h1>My tasks</h1><span class="sub num">${open.length} open, ${open.filter(isLate).length} late</span><span class="grow"></span><button class="btn primary" onClick=${() => ctx.newTask({ owner_id: ctx.me.id })}>${I.plus}New task</button></div>
     <${WeekStrip} ctx=${ctx} tasks=${mine} day=${day} setDay=${setDay} />
     ${approvals.length ? html`<div style="padding:0 28px 12px"><div class="panel"><div class="ph"><h2>Needs your approval</h2></div>${approvals.map((r) => { const t = ctx.tasks.find((x) => x.id === r.task_id); return html`<div class="need"><span class="k">Date change</span><span class="t"><span onClick=${() => ctx.openTask(t)}>${t.title} → ${shortDue(r.proposed_due)}</span><span>${first(ctx.person(r.requested_by)?.name)}${r.reason ? ', ' + r.reason : ''}</span></span><span class="na"><button class="btn primary" onClick=${() => ctx.decideDate(r, true)}>Approve</button><button class="btn ghost" onClick=${() => ctx.decideDate(r, false)}>Reject</button></span></div>`; })}</div></div>` : ''}
-    <div class="page">${groups.length ? html`<${Groups} ctx=${ctx} groups=${groups} rowProps=${{ showDept: true }} />` : html`<p class="empty">Nothing open${day ? ' that day' : ''}. Add a task below.</p>`}</div>`;
+    <div class="page">${groups.length ? html`<${Groups} ctx=${ctx} groups=${groups} storeKey="mine" rowProps=${{ showDept: true }} />` : html`<p class="empty">Nothing open${day ? ' that day' : ''}. Add a task below.</p>`}</div>`;
 }
 
 /* ---------- Overview ---------- */
@@ -1078,7 +1114,7 @@ function Overview({ ctx }) {
   const [summary, setSummary] = useState(null);
   const td = today(), ws = weekStart(), we = weekEnd();
   const needs = ctx.needsYou();
-  const open = ctx.open();
+  const open = ctx.open().filter(isActive);
   const doneWeek = ctx.tasks.filter((t) => t.status === 'done' && t.completed_at && t.completed_at.slice(0, 10) >= ws);
   const dueWeek = open.filter((t) => t.due_date && t.due_date >= ws && t.due_date <= we);
   const blocked = open.filter((t) => t.status === 'blocked');
@@ -1319,16 +1355,63 @@ function parseDateWords(s) {
   for (const [re, fn] of rules) { const m = s.match(re); if (m) { const d = fn(m); if (d) return { date: d, match: m[0] }; } }
   return null;
 }
+const STOP = new Set('a an the and or of for to in on at by with from into about this that these those is are be been was were will shall should must need needs do done get make send share take give follow up all new our my your his her their its it as per via vs call review check plan update fix prepare create discuss finalise finalize revise meeting report list task work team weekly monthly daily today tomorrow week month store stores'.split(' '));
+const stem = (w) => w.replace(/(ings|ing|ies|es|s|ed|ly)$/i, (m) => (m === 'ies' ? 'y' : '')).replace(/[^a-z0-9]/g, '');
+const tokens = (s) => [...new Set((s || '').toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2 && !STOP.has(w)).map(stem).filter((w) => w.length > 2))];
+const lev1 = (a, b) => { if (a.length === b.length) { const d = [...a].map((c, i) => (c !== b[i] ? i : -1)).filter((i) => i >= 0); if (d.length === 2 && d[1] === d[0] + 1 && a[d[0]] === b[d[1]] && a[d[1]] === b[d[0]]) return true; } if (Math.abs(a.length - b.length) > 1) return false; let i = 0, j = 0, e = 0; while (i < a.length && j < b.length) { if (a[i] === b[j]) { i++; j++; continue; } if (++e > 1) return false; if (a.length > b.length) i++; else if (b.length > a.length) j++; else { i++; j++; } } return e + (a.length - i) + (b.length - j) <= 1; };
+function nameIndex(people) {
+  const idx = {};
+  const add = (k, id) => { (idx[k] ||= new Set()).add(id); };
+  people.forEach((p) => { const parts = p.name.toLowerCase().split(/\s+/).filter((w) => w.length > 1); parts.forEach((w) => add(w, p.id)); add(p.name.toLowerCase(), p.id); });
+  return idx;
+}
+function findPerson(word, people, idx) {
+  const w = word.toLowerCase().replace(/[^a-z]/g, '').replace(/s$/, (m) => (idx[word.toLowerCase().replace(/[^a-z]/g, '')] ? m : ''));
+  if (w.length < 3) return null;
+  const hit = idx[w] || idx[word.toLowerCase().replace(/[^a-z]/g, '')];
+  if (hit && hit.size === 1) return [...hit][0];
+  if (w.length >= 5 && !hit) { const near = Object.keys(idx).filter((k) => !k.includes(' ') && k.length >= 5 && lev1(k, w) && idx[k].size === 1); if (near.length === 1) return [...idx[near[0]]][0]; }
+  return null;
+}
+// suggest a task list from where similar tasks already sit
+function suggestList(title, ctx, deptId, ownerId) {
+  const tt = tokens(title);
+  if (!tt.length) return null;
+  const pool = ctx.tasks.filter((t) => t.task_list_id && (!deptId || t.department_id === deptId));
+  const score = {};
+  for (const t of pool) {
+    const ov = tokens(t.title).filter((w) => tt.includes(w)).length;
+    if (!ov) continue;
+    const k = t.task_list_id;
+    score[k] = score[k] || [];
+    score[k].push(ov + (ownerId && t.owner_id === ownerId ? 0.5 : 0));
+  }
+  for (const l of ctx.lists.filter((l) => !deptId || l.department_id === deptId)) {
+    const lv = tokens(l.name).filter((w) => tt.includes(w)).length;
+    if (lv) (score[l.id] ||= []).push(lv * 2.5);
+  }
+  const ranked = Object.entries(score).map(([k, v]) => [k, v.sort((a, b) => b - a).slice(0, 3).reduce((x, y) => x + y, 0)]).sort((a, b) => b[1] - a[1]);
+  if (!ranked.length || ranked[0][1] < 2) return null;
+  if (ranked[1] && ranked[1][1] >= ranked[0][1] * 0.85) return null;
+  const l = ctx.list(ranked[0][0]);
+  return l ? { task_list_id: l.id, department_id: l.department_id } : null;
+}
 function parseTaskText(raw, ctx) {
   let s = ` ${raw} `;
   const out = { owner_id: null, due_date: null, priority: null, department_id: null, task_list_id: null };
   const cut = (str) => { s = s.replace(str, ' '); };
-  // priority
-  const pm = s.match(/\s!(1|2|3|urgent|high|normal|medium|low)\b/i) || s.match(/[,\s](urgent|asap|high priority|top priority|p1|p2|p3|low priority)\b/i);
-  if (pm) { const v = pm[1].toLowerCase(); out.priority = /^(1|urgent|high|asap|high priority|top priority|p1)$/.test(v) ? 'P1' : /^(3|low|low priority|p3)$/.test(v) ? 'P3' : 'P2'; cut(pm[0]); }
+  // priority (low first so "not urgent" is not read as urgent)
+  const low = s.match(/[\s,(]!(3|low)\b|[\s,(](not urgent|no rush|no hurry|low[- ]priority|whenever possible|whenever|when free|p3)\b/i);
+  if (low) { out.priority = 'P3'; cut(low[0]); }
+  else {
+    const hi = s.match(/[\s,(]!(1|urgent|high)\b|[\s,(](urgently|urgent|asap|a\.s\.a\.p|immediately|immediate|right away|critical|top[- ]priority|high[- ]priority|priority|important|p1)\b/i);
+    if (hi) { out.priority = 'P1'; cut(hi[0]); }
+    else { const mid = s.match(/[\s,(]!(2|normal|medium)\b|[\s,(](normal priority|medium priority|p2)\b/i); if (mid) { out.priority = 'P2'; cut(mid[0]); } }
+  }
   // explicit @owner and #place tokens
+  const idx = nameIndex(ctx.people);
   const at = s.match(/\s@([a-z][\w.-]*)/i);
-  if (at) { const q = at[1].toLowerCase(); const hit = ctx.people.filter((p) => p.name.toLowerCase().startsWith(q) || p.name.toLowerCase().split(' ').some((w) => w.startsWith(q))); if (hit.length === 1) { out.owner_id = hit[0].id; cut(at[0]); } }
+  if (at) { const q = at[1].toLowerCase(); const hit = ctx.people.filter((p) => p.name.toLowerCase().split(' ').some((w) => w.startsWith(q))); if (hit.length === 1) { out.owner_id = hit[0].id; cut(at[0]); } }
   const hash = s.match(/\s#([\w&/-]+)/i);
   if (hash) {
     const q = hash[1].toLowerCase().replace(/[-_]/g, ' ');
@@ -1340,30 +1423,43 @@ function parseTaskText(raw, ctx) {
   // date words
   const dm = parseDateWords(s);
   if (dm) { out.due_date = dm.date; cut(dm.match); }
-  // plain-word owner: "Vivek to …", "for Vivek", "ask Vivek to", or a unique first name
+  // owner in plain words, anywhere in the sentence
   if (!out.owner_id) {
     const words = s.trim().split(/\s+/);
+    const OWNER_BEFORE = ['by', 'for', 'ask', 'tell', 'remind', 'get', 'have', 'assign', 'assigned', 'owner', 'owned', '->', '→', 'over', 'let'];
+    const NOT_OWNER_BEFORE = ['with', 'from', 'cc', 'and', 'call', 'ping', 'email', 'mail', 'meet', 'message', 'inform', 'update', 'brief', 'show', 'send', 'share', 'copy', 'loop', 'about', 'of'];
+    let best = null;
     for (let i = 0; i < words.length; i++) {
-      const w = words[i].toLowerCase().replace(/[^a-z]/g, '');
-      if (w.length < 3) continue;
-      const full = ctx.people.filter((p) => p.name.toLowerCase().split(' ')[0] === w);
-      if (full.length !== 1) continue;
-      const prev = (words[i - 1] || '').toLowerCase(); const next = (words[i + 1] || '').toLowerCase();
-      if (i === 0 || ['ask', 'for', 'tell', 'remind', 'get', 'have', 'with', 'assign', 'to'].includes(prev) || next === 'to') {
-        out.owner_id = full[0].id;
-        let re = new RegExp(`\\s(?:ask |tell |remind |get |have |assign (?:to )?|for )?${words[i].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?: to)?\\s`, 'i');
-        s = s.replace(re, ' ');
-        break;
-      }
+      const raw = words[i].replace(/^[("'\[]+|[)"'\],.:;!?]+$/g, '');
+      const two = (raw + ' ' + (words[i + 1] || '').replace(/[,.:;!?)]+$/, '')).toLowerCase();
+      let id = idx[two] && idx[two].size === 1 ? [...idx[two]][0] : findPerson(raw.replace(/'s$/i, ''), ctx.people, idx);
+      if (!id) continue;
+      const prev = (words[i - 1] || '').toLowerCase().replace(/[^a-z>→-]/g, '');
+      const next = (words[i + 1] || '').toLowerCase().replace(/[^a-z:]/g, '');
+      const strong = i === 0 || OWNER_BEFORE.includes(prev) || ['to', 'will', 'should', 'must', 'needs', 'can', 'pls', 'please', 'to:'].includes(next) || /^\(.+\)$/.test(words[i]) || /'s$/i.test(raw) || /:$/.test(words[i]);
+      const weak = !NOT_OWNER_BEFORE.includes(prev) && prev !== 'to';
+      const sc = strong ? 2 : weak ? 1 : 0;
+      if (sc && (!best || sc > best.sc)) best = { id, i, sc, two: idx[two] && idx[two].size === 1 };
+    }
+    if (best) {
+      out.owner_id = best.id;
+      const w = words[best.i]; const w2 = best.two ? ' ' + words[best.i + 1] : '';
+      const esc = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const re = new RegExp(`\\s(?:ask |tell |remind |get |have |let |assign(?:ed)? (?:to )?|owner:? |owned by |for |by |-> |→ )?${esc(w + w2)}(?:'s)?(?: (?:to|will|should|must|needs to|can|pls|please)\\b)?:?\\s`, 'i');
+      s = s.replace(re, ' ');
     }
   }
-  // plain-word department or list
+  // plain-word department or list name
   if (!out.department_id) {
-    const low = s.toLowerCase();
-    const d = [...ctx.depts].sort((a, b) => b.name.length - a.name.length).find((x) => low.includes(` ${x.name.toLowerCase()} `));
-    if (d) { out.department_id = d.id; s = s.replace(new RegExp(`\\s(?:in |for )?${d.name}\\s`, 'i'), ' '); }
+    const lowS = s.toLowerCase();
+    const d = [...ctx.depts].sort((a, b) => b.name.length - a.name.length).find((x) => lowS.includes(` ${x.name.toLowerCase()} `));
+    if (d) { out.department_id = d.id; s = s.replace(new RegExp(`\\s(?:in |for |under )?${d.name}\\s`, 'i'), ' '); }
   }
-  let title = s.replace(/\s+/g, ' ').replace(/\s([,.;:])/g, '$1').trim().replace(/^(to|and|please|pls|-)\s+/i, '').replace(/[,;:\s-]+$/, '');
+  let title = s.replace(/\s+/g, ' ').replace(/\s([,.;:])/g, '$1').trim()
+    .replace(/^(to|and|please|pls|kindly|-|:)\s+/i, '')
+    .replace(/\s*(?:,\s*)?(?:has |have )?(?:to be|should be|needs to be|need to be|must be|will be|is to be)\s+(?:done|completed|finished|closed|sent|shared|submitted|finalised|finalized)\s*$/i, '')
+    .replace(/\s*(?:,\s*)?(?:to be|should be|needs to be|must be)\s*$/i, '')
+    .replace(/[,;:\s-]+$/, '').replace(/^[,;:\s-]+/, '');
   if (title) title = title[0].toUpperCase() + title.slice(1);
   return { ...out, title };
 }
@@ -1396,7 +1492,10 @@ function Composer({ ctx, deptHint, listHint }) {
   const owner_id = pick('owner_id') || ctx.me.id;
   const priority = pick('priority') || 'P2';
   const due_date = pick('due_date');
-  const list_id = ov.task_list_id !== undefined ? ov.task_list_id : (sticky?.task_list_id ?? parsed.task_list_id ?? (ai && ai.text === text ? ai.task_list_id : null) ?? ctxDefault.task_list_id);
+  const baseDept = ov.department_id || sticky?.department_id || parsed.department_id || ctxDefault.department_id || null;
+  const guess = useMemo(() => (parsed.title && parsed.title.split(' ').length >= 2 ? suggestList(parsed.title, ctx, baseDept, ov.owner_id || parsed.owner_id) : null), [parsed.title, baseDept, ov.owner_id, parsed.owner_id, ctx.tasks.length]);
+  const list_id = ov.task_list_id !== undefined ? ov.task_list_id : (sticky?.task_list_id ?? parsed.task_list_id ?? (ai && ai.text === text ? ai.task_list_id : null) ?? ctxDefault.task_list_id ?? guess?.task_list_id ?? null);
+  const listGuessed = ov.task_list_id === undefined && !sticky?.task_list_id && !parsed.task_list_id && !ctxDefault.task_list_id && guess && list_id === guess.task_list_id;
   const dept_id = ov.department_id || (list_id && ctx.list(list_id)?.department_id) || sticky?.department_id || parsed.department_id || (ai && ai.text === text ? ai.department_id : null) || ctxDefault.department_id || ctx.ownerDept(owner_id) || ctx.myDepts[0] || ctx.depts[0]?.id;
   const title = (ai && ai.text === text && ai.title && (!parsed.title || parsed.title.split(' ').length > ai.title.split(' ').length + 3)) ? ai.title : parsed.title;
   const fromAi = (k) => !ov[k] && !parsed[k] && ai && ai.text === text && ai[k];
@@ -1486,7 +1585,7 @@ function Composer({ ctx, deptHint, listHint }) {
         <button class=${'cchip' + (ov.owner_id || parsed.owner_id ? ' set' : '') + (fromAi('owner_id') ? ' ai' : '')} onClick=${() => setPop(pop === 'owner' ? null : 'owner')} title="Owner (type @name)"><${Avatar} ctx=${ctx} id=${owner_id} size=${18} />${owner_id === ctx.me.id ? 'Me' : first(onP?.name)}</button>
         <button class=${'cchip' + (due_date ? ' set' : ' need') + (fromAi('due_date') ? ' ai' : '')} onClick=${() => setPop(pop === 'date' ? null : 'date')} title="Due date (type fri, tomorrow, 12 nov)">${I.cal}${due_date ? fmtDate(due_date) : 'Add date'}</button>
         <button class=${'cchip prio-' + priority + (ov.priority || parsed.priority ? ' set' : '')} onClick=${() => setPop(pop === 'prio' ? null : 'prio')} title="Priority (type !1, !2, !3 or urgent)">${PRI[priority]}</button>
-        <button class=${'cchip' + (ov.department_id || ov.task_list_id || parsed.department_id || list_id ? ' set' : '') + (fromAi('department_id') ? ' ai' : '')} onClick=${() => setPop(pop === 'place' ? null : 'place')} title="Department or list (type #name)"><span class="ddot" style=${'background:' + ctx.deptColor(dept_id)}></span>${placeLabel}</button>
+        <button class=${'cchip' + (ov.department_id || ov.task_list_id || parsed.department_id || list_id ? ' set' : '') + (fromAi('department_id') || listGuessed ? ' ai' : '')} onClick=${() => setPop(pop === 'place' ? null : 'place')} title=${listGuessed ? 'List suggested from where similar tasks sit. Click to change.' : 'Department or list (type #name)'}>${listGuessed ? I.spark : null}<span class="ddot" style=${'background:' + ctx.deptColor(dept_id)}></span>${placeLabel}</button>
         ${aiBusy ? html`<span class="cnote">${I.spark} reading…</span>` : null}
         ${sticky ? html`<span class="cnote">Adding more for ${first(ctx.person(sticky.owner_id || ctx.me.id)?.name)}, Esc to stop</span>` : null}
       </div>` : null}
@@ -1601,7 +1700,7 @@ function TaskPanel({ ctx, id, close }) {
       sb.from('task_updates').select('*').eq('task_id', id).order('created_at', { ascending: false }),
       sb.from('task_activity').select('*').eq('task_id', id).order('created_at', { ascending: false }).limit(30),
     ]);
-    setUpdates([...(u.data || []).map((x) => ({ ...x, kind: 'u' })), ...(a.data || []).filter((x) => ['date_changed', 'reassigned', 'blocked', 'done', 'reopened', 'acknowledged', 'nudged', 'asked_update'].includes(x.action)).map((x) => ({ ...x, kind: 'a' }))]
+    setUpdates([...(u.data || []).map((x) => ({ ...x, kind: 'u' })), ...(a.data || []).filter((x) => ['date_changed', 'reassigned', 'blocked', 'done', 'reopened', 'acknowledged', 'nudged', 'asked_update', 'on_hold', 'resumed', 'cancelled'].includes(x.action)).map((x) => ({ ...x, kind: 'a' }))]
       .sort((x, y) => y.created_at.localeCompare(x.created_at)));
   }
   if (!t) return html`<div class="scrim" onClick=${close}><div class="sheet" onClick=${(e) => e.stopPropagation()}><p>This task is not available. It may have been deleted or made private.</p><button class="btn" onClick=${close}>Close</button></div></div>`;
@@ -1645,11 +1744,12 @@ function TaskPanel({ ctx, id, close }) {
     <input class="titlein" aria-label="Task title" value=${title} disabled=${!can} onInput=${(e) => setTitle(e.target.value)} onBlur=${() => { const s = title.trim(); if (s && s !== t.title) save({ title: s }); }} onKeyDown=${(e) => e.key === 'Enter' && e.target.blur()} />
 
     <div class="actions">
-      ${t.status === 'done' ? html`<button class="btn" onClick=${() => ctx.reopen(t)}>Reopen</button>` : html`
+      ${isClosed(t) ? html`<button class="btn" onClick=${() => ctx.reopen(t)}>${t.status === 'cancelled' ? 'Restore' : 'Reopen'}</button>` : t.status === 'on_hold' ? html`<button class="btn primary" onClick=${() => save({ status: 'open' })}>Resume</button><button class="btn ghost" onClick=${() => ctx.cancel(t)}>Cancel task</button>` : html`
         <button class="btn primary" disabled=${!can} onClick=${() => ctx.done(t)}>Mark done</button>
         ${isOwner && !t.acknowledged_at ? html`<button class="btn" onClick=${() => save({ acknowledged_at: new Date().toISOString() })}>Got it</button>` : ''}
         ${t.status === 'blocked' ? html`<button class="btn" onClick=${() => save({ status: 'open' })}>Unblock</button>` : can ? html`<button class="btn" onClick=${() => setBlk({ reason: '', on: '' })}>Mark blocked</button>` : ''}
         ${!canRedate && can && t.due_date && !pendingReq ? html`<button class="btn" onClick=${() => setAsk({ date: '', reason: '' })}>Ask for new date</button>` : ''}
+        ${can ? html`<button class="btn" onClick=${() => { const r = (prompt('Why on hold? (optional)') ?? null); if (r !== null) ctx.hold(t, r.trim()); }}>Put on hold</button><button class="btn ghost" onClick=${() => ctx.cancel(t)}>Cancel task</button>` : ''}
         ${canNudge ? html`<button class="btn" onClick=${() => ctx.nudge(t, 'nudge')}>Nudge ${first(ctx.person(t.owner_id)?.name)}</button><button class="btn" onClick=${() => ctx.nudge(t, 'ask')}>Ask for update</button>` : ''}`}
     </div>
     ${t.request_status === 'pending' && isOwner ? html`<div class="box"><span>Request from ${ctx.person(t.created_by)?.name}</span><div class="actions"><button class="btn primary" onClick=${() => ctx.decideRequest(t, true)}>Accept</button><button class="btn" onClick=${() => { const n = prompt('Reason for declining (optional)'); ctx.decideRequest(t, false, n); close(); }}>Decline</button><span class="note">or change the owner below</span></div></div>` : ''}
@@ -1729,6 +1829,9 @@ function activityText(ctx, a) {
   if (a.action === 'done') return `${who} marked done`;
   if (a.action === 'reopened') return `${who} reopened`;
   if (a.action === 'acknowledged') return `${who} acknowledged`;
+  if (a.action === 'on_hold') return `${who} put it on hold`;
+  if (a.action === 'resumed') return `${who} resumed it`;
+  if (a.action === 'cancelled') return `${who} cancelled it`;
   return a.action;
 }
 
