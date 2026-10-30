@@ -384,7 +384,8 @@ function makeCtx({ me, data, setData, load, setSheet, setToast, setPalette, pins
 
   return { me, data, people, depts, members, lists, tasks, dcr, person, dept, list, deptColor, isAdmin, myDepts, headDepts, isHead, canSeeStats, canDecide, canRedate, canEdit, canOwner, canManageLists,
     open, mine, ownerDept, update, save, done, reopen, needsYou, decideDate, approveOther, decideRequest, nudge, readUpdate, createList, moveList, renameList, deleteList, moveTo, load, setToast, setSheet, setPalette,
-    openTask: (t) => setSheet({ mode: 'edit', id: t.id }), newTask: (prefill) => setSheet({ mode: 'new', prefill }), pins, addPin, removePin };
+    openTask: (t) => setSheet({ mode: 'edit', id: t.id }),
+    newTask: (p = {}) => { const ov = {}; if (p.department_id) ov.department_id = p.department_id; if (p.task_list_id) ov.task_list_id = p.task_list_id; if (p.owner_id) ov.owner_id = p.owner_id; document.dispatchEvent(new CustomEvent('bs-compose', { detail: { ov } })); }, pins, addPin, removePin };
 }
 
 function Login() {
@@ -1293,60 +1294,223 @@ function Hints({ ctx, hint, done }) {
     ${left.map((h) => html`<div class="hrow"><span>${h.label}</span><button class="btn primary" onClick=${() => act(h)}>Yes</button><button class="btn ghost" onClick=${() => setLeft((l) => l.filter((x) => x !== h))}>No</button></div>`)}
   </div>`;
 }
-/* ---------- composer ---------- */
-function Composer({ ctx, deptHint, listHint }) {
-  const [text, setText] = useState('');
-  const [busy, setBusy] = useState(false);
-  const ref = useRef();
-  useEffect(() => {
-    const k = (e) => { if (e.key === 'n' && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName) && !e.metaKey && !e.ctrlKey) { e.preventDefault(); ref.current?.focus(); } };
-    const c = (e) => { setText(e.detail || ''); setTimeout(() => ref.current?.focus(), 0); };
-    window.addEventListener('keydown', k); document.addEventListener('bs-compose', c);
-    return () => { window.removeEventListener('keydown', k); document.removeEventListener('bs-compose', c); };
-  }, []);
-  const ownerDept = (pid) => ctx.members.find((m) => m.person_id === pid)?.department_id;
-  function onPaste(e) {
-    const txt = e.clipboardData?.getData('text') || '';
-    const lines = txt.split(/\r?\n/).map((s) => s.replace(/^\s*([-*•–]|\d+[.)])\s*/, '').trim()).filter(Boolean);
-    if (lines.length > 1) { e.preventDefault(); ctx.setSheet({ mode: 'notes', text: txt, dept: deptHint }); }
+/* ---------- smart composer: everything from the add box ---------- */
+const DAYW = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+const DAYFULL = { monday: 'mon', tuesday: 'tue', wednesday: 'wed', thursday: 'thu', friday: 'fri', saturday: 'sat', sunday: 'sun', tues: 'tue', thur: 'thu', thurs: 'thu', weds: 'wed' };
+const MONTHS = 'jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|january|february|march|april|june|july|august|september|october|november|december';
+function parseDateWords(s) {
+  const t = today();
+  const rules = [
+    [/\b(?:by |on |before |due )?(?:eod|end of day|today|tonight)\b/i, () => t],
+    [/\b(?:by |on |before |due )?(?:tomorrow|tmrw|tmr|tom)\b/i, () => addDays(t, 1)],
+    [/\b(?:by |before )?(?:eow|end of (?:the )?week|this week)\b/i, () => (dow(t) <= 4 ? addDays(t, 4 - dow(t)) : nextDow(4))],
+    [/\b(?:by |before )?next week\b/i, () => nextDow(0)],
+    [/\b(?:by |before )?(?:eom|end of (?:the )?month)\b/i, () => { const d = new Date(Date.parse(t)); return ymd(new Date(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)); }],
+    [/\b(?:in )?\+?(\d{1,2}) ?(days?|d)\b/i, (m) => addDays(t, +m[1])],
+    [/\b(?:in )?\+?(\d{1,2}) ?(weeks?|w)\b/i, (m) => addDays(t, +m[1] * 7)],
+    [/(?:^|\s)\+(\d{1,2})\b/, (m) => addDays(t, +m[1])],
+    [new RegExp(`\\b(?:by |on |before |due )?(?:the )?(\\d{1,2})(?:st|nd|rd|th)?(?: of)? (${MONTHS})(?:,? (20\\d\\d))?\\b`, 'i'), (m) => m[3] ? ymd(new Date(Date.parse(`${m[1]} ${m[2].slice(0, 3)} ${m[3]}`))) : parseQuick(`${m[1]} ${m[2].slice(0, 3)}`)],
+    [new RegExp(`\\b(?:by |on |before |due )?(${MONTHS}) (\\d{1,2})(?:st|nd|rd|th)?(?:,? (20\\d\\d))?\\b`, 'i'), (m) => m[3] ? ymd(new Date(Date.parse(`${m[2]} ${m[1].slice(0, 3)} ${m[3]}`))) : parseQuick(`${m[2]} ${m[1].slice(0, 3)}`)],
+    [/\b(?:by |before )?(?:this |the )?weekend\b/i, () => (dow(t) < 5 ? addDays(t, 5 - dow(t)) : nextDow(5))],
+    [/\b(?:by |on |before |due )(?:the )?(\d{1,2})(?:st|nd|rd|th)\b/i, (m) => { const d = new Date(Date.parse(t)); let y = d.getUTCFullYear(), mo = d.getUTCMonth(); if (+m[1] < d.getUTCDate()) { mo += 1; if (mo > 11) { mo = 0; y += 1; } } const r = new Date(y, mo, +m[1]); return r.getMonth() === mo ? ymd(r) : null; }],
+    [/\b(?:by |on |before |due )?(\d{1,2})[\/.-](\d{1,2})(?:[\/.-](\d{2,4}))?\b/, (m) => { let y = m[3] ? (m[3].length === 2 ? 2000 + +m[3] : +m[3]) : new Date().getFullYear(); let d = `${y}-${String(m[2]).padStart(2, '0')}-${String(m[1]).padStart(2, '0')}`; if (!m[3] && d < t) d = `${y + 1}${d.slice(4)}`; return isNaN(Date.parse(d)) || +m[2] > 12 ? null : d; }],
+    [/\b(?:by |on |before |due )?(next )?(mon|tue|tues|wed|weds|thu|thur|thurs|fri|sat|sun)(?:day|nesday|sday|urday)?\b/i, (m) => { const k = DAYFULL[m[2].toLowerCase()] || m[2].toLowerCase().slice(0, 3); return parseQuick((m[1] ? 'next ' : '') + k); }],
+  ];
+  for (const [re, fn] of rules) { const m = s.match(re); if (m) { const d = fn(m); if (d) return { date: d, match: m[0] }; } }
+  return null;
+}
+function parseTaskText(raw, ctx) {
+  let s = ` ${raw} `;
+  const out = { owner_id: null, due_date: null, priority: null, department_id: null, task_list_id: null };
+  const cut = (str) => { s = s.replace(str, ' '); };
+  // priority
+  const pm = s.match(/\s!(1|2|3|urgent|high|normal|medium|low)\b/i) || s.match(/[,\s](urgent|asap|high priority|top priority|p1|p2|p3|low priority)\b/i);
+  if (pm) { const v = pm[1].toLowerCase(); out.priority = /^(1|urgent|high|asap|high priority|top priority|p1)$/.test(v) ? 'P1' : /^(3|low|low priority|p3)$/.test(v) ? 'P3' : 'P2'; cut(pm[0]); }
+  // explicit @owner and #place tokens
+  const at = s.match(/\s@([a-z][\w.-]*)/i);
+  if (at) { const q = at[1].toLowerCase(); const hit = ctx.people.filter((p) => p.name.toLowerCase().startsWith(q) || p.name.toLowerCase().split(' ').some((w) => w.startsWith(q))); if (hit.length === 1) { out.owner_id = hit[0].id; cut(at[0]); } }
+  const hash = s.match(/\s#([\w&/-]+)/i);
+  if (hash) {
+    const q = hash[1].toLowerCase().replace(/[-_]/g, ' ');
+    const lists = ctx.lists.filter((l) => l.name.toLowerCase().startsWith(q) || l.name.toLowerCase().includes(q));
+    const depts = ctx.depts.filter((d) => d.name.toLowerCase().startsWith(q) || d.name.toLowerCase().split(' ').some((w) => w.startsWith(q)));
+    if (lists.length === 1) { out.task_list_id = lists[0].id; out.department_id = lists[0].department_id; cut(hash[0]); }
+    else if (depts.length === 1) { out.department_id = depts[0].id; cut(hash[0]); }
   }
-  async function submit(e) {
-    e.preventDefault();
-    const s = text.trim(); if (!s) return;
-    setBusy(true);
-    let data = null;
-    try {
-      const ctrl = new AbortController(); const tm = setTimeout(() => ctrl.abort(), 7000);
-      ({ data } = await sb.functions.invoke('quick-add', { body: { text: s, today: today() }, signal: ctrl.signal }));
-      clearTimeout(tm);
-    } catch (_) { data = null; }
-    const ok = data && !data.fallback && !data.error;
-    if (ok && data.owner_id && data.due_date && data.priority) {
-      const row = { title: data.title || s, owner_id: data.owner_id, due_date: data.due_date, due_time: data.due_time || null, priority: data.priority,
-        department_id: data.department_id || deptHint || ownerDept(data.owner_id) || ctx.myDepts[0] || ctx.depts[0].id, task_list_id: data.task_list_id || (deptHint && listHint && listHint !== 'none' ? listHint : null), is_private: !!data.is_private, created_by: ctx.me.id, source: 'app' };
-      const { data: saved, error } = await sb.from('tasks').insert(row).select().single();
-      setBusy(false);
-      if (error) { ctx.setToast({ text: error.message }); return; }
-      setText('');
-      ctx.setToast({ text: `Added: ${row.title} → ${row.owner_id === ctx.me.id ? 'you' : first(ctx.person(row.owner_id)?.name)}, ${shortDue(row.due_date)}, ${row.priority}`,
-        action: { label: 'Edit', fn: () => ctx.setSheet({ mode: 'edit', id: saved.id }) },
-        undo: async () => { await sb.from('tasks').delete().eq('id', saved.id); ctx.load(); } });
-      ctx.load();
-      return;
+  // date words
+  const dm = parseDateWords(s);
+  if (dm) { out.due_date = dm.date; cut(dm.match); }
+  // plain-word owner: "Vivek to …", "for Vivek", "ask Vivek to", or a unique first name
+  if (!out.owner_id) {
+    const words = s.trim().split(/\s+/);
+    for (let i = 0; i < words.length; i++) {
+      const w = words[i].toLowerCase().replace(/[^a-z]/g, '');
+      if (w.length < 3) continue;
+      const full = ctx.people.filter((p) => p.name.toLowerCase().split(' ')[0] === w);
+      if (full.length !== 1) continue;
+      const prev = (words[i - 1] || '').toLowerCase(); const next = (words[i + 1] || '').toLowerCase();
+      if (i === 0 || ['ask', 'for', 'tell', 'remind', 'get', 'have', 'with', 'assign', 'to'].includes(prev) || next === 'to') {
+        out.owner_id = full[0].id;
+        let re = new RegExp(`\\s(?:ask |tell |remind |get |have |assign (?:to )?|for )?${words[i].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?: to)?\\s`, 'i');
+        s = s.replace(re, ' ');
+        break;
+      }
     }
-    const prefill = ok ? { ...data, raw: s } : { title: s, raw: s, parseNote: 'Could not read that. Fill in the fields.' };
-    if (!prefill.department_id && deptHint) prefill.department_id = deptHint;
-    if (!prefill.task_list_id && listHint && listHint !== 'none') prefill.task_list_id = listHint;
-    setBusy(false); setText('');
-    ctx.newTask(prefill);
   }
-  return html`<div class="composer"><form onSubmit=${submit}>
-    <label class="sr" for="composer">Add a task</label>
-    <input id="composer" ref=${ref} placeholder=${busy ? 'Reading…' : 'Add a task: “Tiru to finalise Diwali creative by Thu, urgent”. Paste several lines to add many.'} value=${text} disabled=${busy} onInput=${(e) => setText(e.target.value)} onPaste=${onPaste} autocomplete="off" />
-    <button type="submit" aria-label="Add task" disabled=${busy}><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5"/><path d="M6 11l6-6 6 6"/></svg></button>
-  </form></div>`;
+  // plain-word department or list
+  if (!out.department_id) {
+    const low = s.toLowerCase();
+    const d = [...ctx.depts].sort((a, b) => b.name.length - a.name.length).find((x) => low.includes(` ${x.name.toLowerCase()} `));
+    if (d) { out.department_id = d.id; s = s.replace(new RegExp(`\\s(?:in |for )?${d.name}\\s`, 'i'), ' '); }
+  }
+  let title = s.replace(/\s+/g, ' ').replace(/\s([,.;:])/g, '$1').trim().replace(/^(to|and|please|pls|-)\s+/i, '').replace(/[,;:\s-]+$/, '');
+  if (title) title = title[0].toUpperCase() + title.slice(1);
+  return { ...out, title };
 }
 
+function Composer({ ctx, deptHint, listHint }) {
+  const [text, setText] = useState('');
+  const [ov, setOv] = useState({});
+  const [ai, setAi] = useState(null);
+  const [aiBusy, setAiBusy] = useState(false);
+  const [pop, setPop] = useState(null);
+  const [ac, setAc] = useState(null);
+  const [acI, setAcI] = useState(0);
+  const [sticky, setSticky] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const inRef = useRef();
+  const wrapRef = useRef();
+  const aiTimer = useRef();
+  const ctxDefault = { department_id: deptHint || null, task_list_id: deptHint && listHint && listHint !== 'none' ? listHint : null };
+
+  useEffect(() => {
+    const k = (e) => { if (e.key === 'n' && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName) && !e.metaKey && !e.ctrlKey && !e.altKey) { e.preventDefault(); inRef.current?.focus(); } };
+    const c = (e) => { const d = e.detail || {}; if (typeof d === 'string') setText(d); else { if (d.text) setText(d.text); setOv((o) => ({ ...o, ...(d.ov || {}) })); } setTimeout(() => inRef.current?.focus(), 0); };
+    const out = (e) => { if (wrapRef.current && !wrapRef.current.contains(e.target)) setPop(null); };
+    window.addEventListener('keydown', k); document.addEventListener('bs-compose', c); document.addEventListener('mousedown', out);
+    return () => { window.removeEventListener('keydown', k); document.removeEventListener('bs-compose', c); document.removeEventListener('mousedown', out); };
+  }, []);
+
+  const parsed = useMemo(() => parseTaskText(text, ctx), [text, ctx.people, ctx.lists, ctx.depts]);
+  const pick = (k) => ov[k] ?? sticky?.[k] ?? parsed[k] ?? (ai && ai.text === text ? ai[k] : null);
+  const owner_id = pick('owner_id') || ctx.me.id;
+  const priority = pick('priority') || 'P2';
+  const due_date = pick('due_date');
+  const list_id = ov.task_list_id !== undefined ? ov.task_list_id : (sticky?.task_list_id ?? parsed.task_list_id ?? (ai && ai.text === text ? ai.task_list_id : null) ?? ctxDefault.task_list_id);
+  const dept_id = ov.department_id || (list_id && ctx.list(list_id)?.department_id) || sticky?.department_id || parsed.department_id || (ai && ai.text === text ? ai.department_id : null) || ctxDefault.department_id || ctx.ownerDept(owner_id) || ctx.myDepts[0] || ctx.depts[0]?.id;
+  const title = (ai && ai.text === text && ai.title && (!parsed.title || parsed.title.split(' ').length > ai.title.split(' ').length + 3)) ? ai.title : parsed.title;
+  const fromAi = (k) => !ov[k] && !parsed[k] && ai && ai.text === text && ai[k];
+
+  // AI backstop for long sentences the instant reader can't fully place
+  useEffect(() => {
+    clearTimeout(aiTimer.current);
+    const words = text.trim().split(/\s+/).length;
+    if (words < 5 || (parsed.owner_id || ov.owner_id) && (parsed.due_date || ov.due_date)) return;
+    aiTimer.current = setTimeout(async () => {
+      setAiBusy(true);
+      try {
+        const { data } = await sb.functions.invoke('quick-add', { body: { text, today: today() } });
+        if (data && !data.fallback && !data.error) setAi({ ...data, text });
+      } catch (_) {}
+      setAiBusy(false);
+    }, 900);
+    return () => clearTimeout(aiTimer.current);
+  }, [text]);
+
+  // autocomplete for @ and #
+  function onInput(e) {
+    const v = e.target.value; setText(v);
+    if (!v.trim()) { setOv({}); setAi(null); }
+    const pos = e.target.selectionStart; const before = v.slice(0, pos);
+    const m = before.match(/(?:^|\s)([@#])([\w&/-]*)$/);
+    if (m) setAc({ kind: m[1], q: m[2].toLowerCase(), start: pos - m[2].length - 1, end: pos }); else setAc(null);
+    setAcI(0);
+  }
+  const acOpts = !ac ? [] : ac.kind === '@'
+    ? ctx.people.filter((p) => p.name.toLowerCase().split(' ').some((w) => w.startsWith(ac.q)) || p.name.toLowerCase().startsWith(ac.q)).slice(0, 7).map((p) => ({ label: p.name, sub: ctx.dept(ctx.ownerDept(p.id))?.name || '', apply: { owner_id: p.id } }))
+    : [...ctx.lists.filter((l) => l.name.toLowerCase().includes(ac.q.replace(/[-_]/g, ' '))).map((l) => ({ label: l.name, sub: ctx.dept(l.department_id)?.name, apply: { task_list_id: l.id, department_id: l.department_id } })),
+       ...ctx.depts.filter((d) => d.name.toLowerCase().includes(ac.q)).map((d) => ({ label: d.name, sub: 'Department', apply: { department_id: d.id, task_list_id: null } }))].slice(0, 8);
+  function chooseAc(o) {
+    if (!o) return;
+    setText((t) => (t.slice(0, ac.start) + t.slice(ac.end)).replace(/\s{2,}/g, ' '));
+    setOv((x) => ({ ...x, ...o.apply })); setAc(null);
+    setTimeout(() => inRef.current?.focus(), 0);
+  }
+
+  async function submit(keep) {
+    if (!title || busy) return;
+    if (!due_date) { setPop('date'); return; }
+    setBusy(true);
+    const row = { title, owner_id, due_date, priority, department_id: dept_id, task_list_id: list_id && ctx.list(list_id)?.department_id === dept_id ? list_id : null, created_by: ctx.me.id, source: 'app' };
+    const { data: saved, error } = await sb.from('tasks').insert(row).select().single();
+    setBusy(false);
+    if (error) return ctx.setToast({ text: error.message });
+    ctx.setToast({ text: `Added: ${row.title} → ${row.owner_id === ctx.me.id ? 'you' : first(ctx.person(row.owner_id)?.name)}, ${shortDue(row.due_date)}`,
+      action: { label: 'Edit', fn: () => ctx.setSheet({ mode: 'edit', id: saved.id }) },
+      undo: async () => { await sb.from('tasks').delete().eq('id', saved.id); ctx.load(); } });
+    setSticky(keep ? { owner_id: ov.owner_id || parsed.owner_id || null, task_list_id: list_id, department_id: dept_id } : null);
+    setText(''); setOv({}); setAi(null); setPop(null); setAc(null);
+    ctx.load();
+    setTimeout(() => inRef.current?.focus(), 0);
+  }
+  function onKey(e) {
+    if (ac && acOpts.length) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); return setAcI(Math.min(acI + 1, acOpts.length - 1)); }
+      if (e.key === 'ArrowUp') { e.preventDefault(); return setAcI(Math.max(acI - 1, 0)); }
+      if (e.key === 'Tab' || e.key === 'Enter') { e.preventDefault(); return chooseAc(acOpts[acI]); }
+      if (e.key === 'Escape') { e.preventDefault(); return setAc(null); }
+    }
+    if (e.key === 'Enter') { e.preventDefault(); submit(e.shiftKey); }
+    if (e.key === 'Escape') { if (pop) setPop(null); else if (sticky) setSticky(null); else { setText(''); setOv({}); e.target.blur(); } }
+  }
+  function onPaste(e) {
+    const txt = e.clipboardData?.getData('text') || '';
+    if (txt.split(/\r?\n/).filter((l) => l.trim()).length > 1) { e.preventDefault(); ctx.setSheet({ mode: 'notes', text: txt, dept: deptHint }); }
+  }
+  const setO = (k, v) => { setOv((x) => ({ ...x, ...k })); setPop(null); setTimeout(() => inRef.current?.focus(), 0); };
+  const td = today();
+  const show = text.trim() || sticky || Object.keys(ov).length;
+  const placeLabel = list_id && ctx.list(list_id)?.department_id === dept_id ? `${ctx.dept(dept_id)?.name} / ${ctx.list(list_id)?.name}` : ctx.dept(dept_id)?.name;
+  const onP = ctx.person(owner_id);
+
+  return html`<div class="composer" ref=${wrapRef}>
+    <div class="cbox2">
+      ${ac && acOpts.length ? html`<div class="acpop" role="listbox">${acOpts.map((o, n) => html`<button class="opt" role="option" aria-selected=${n === acI} onMouseDown=${(e) => { e.preventDefault(); chooseAc(o); }}>${ac.kind === '@' ? html`<${Avatar} ctx=${ctx} id=${o.apply.owner_id} size=${20} />` : o.apply.task_list_id ? html`<${LIcon} name=${o.label} sm />` : html`<span class="ddot" style=${'background:' + ctx.deptColor(o.apply.department_id)}></span>`}${o.label}<span class="r">${o.sub}</span></button>`)}<div class="achint">Tab or Enter to pick</div></div>` : null}
+      ${pop ? html`<div class="chippop">
+        ${pop === 'date' ? html`<span class="note">${due_date ? 'Change date' : 'When is it due?'}</span><div class="qchips">${[['Today', td], ['Tomorrow', addDays(td, 1)], ['Fri', parseQuick('fri')], ['Mon', nextDow(0)], ['+1 week', addDays(td, 7)], ['End of month', parseDateWords('eom').date]].map(([l, d]) => html`<button class="qchip" aria-pressed=${due_date === d} onClick=${() => setO({ due_date: d })}>${l}</button>`)}</div><input type="date" class="field" aria-label="Pick a date" min=${td} onChange=${(e) => e.target.value && setO({ due_date: e.target.value })} />` : null}
+        ${pop === 'owner' ? html`<${OwnerList} ctx=${ctx} onPick=${(p) => setO({ owner_id: p.id })} />` : null}
+        ${pop === 'prio' ? html`<${PrioritySlider} always value=${priority} onChange=${(p) => setO({ priority: p })} />` : null}
+        ${pop === 'place' ? html`<${PlacePicker} ctx=${ctx} onPick=${(d, l) => setO({ department_id: d, task_list_id: l })} />` : null}
+      </div>` : null}
+      ${show ? html`<div class="cchips" aria-label="Task details">
+        <button class=${'cchip' + (ov.owner_id || parsed.owner_id ? ' set' : '') + (fromAi('owner_id') ? ' ai' : '')} onClick=${() => setPop(pop === 'owner' ? null : 'owner')} title="Owner (type @name)"><${Avatar} ctx=${ctx} id=${owner_id} size=${18} />${owner_id === ctx.me.id ? 'Me' : first(onP?.name)}</button>
+        <button class=${'cchip' + (due_date ? ' set' : ' need') + (fromAi('due_date') ? ' ai' : '')} onClick=${() => setPop(pop === 'date' ? null : 'date')} title="Due date (type fri, tomorrow, 12 nov)">${I.cal}${due_date ? fmtDate(due_date) : 'Add date'}</button>
+        <button class=${'cchip prio-' + priority + (ov.priority || parsed.priority ? ' set' : '')} onClick=${() => setPop(pop === 'prio' ? null : 'prio')} title="Priority (type !1, !2, !3 or urgent)">${PRI[priority]}</button>
+        <button class=${'cchip' + (ov.department_id || ov.task_list_id || parsed.department_id || list_id ? ' set' : '') + (fromAi('department_id') ? ' ai' : '')} onClick=${() => setPop(pop === 'place' ? null : 'place')} title="Department or list (type #name)"><span class="ddot" style=${'background:' + ctx.deptColor(dept_id)}></span>${placeLabel}</button>
+        ${aiBusy ? html`<span class="cnote">${I.spark} reading…</span>` : null}
+        ${sticky ? html`<span class="cnote">Adding more for ${first(ctx.person(sticky.owner_id || ctx.me.id)?.name)}, Esc to stop</span>` : null}
+      </div>` : null}
+      <form onSubmit=${(e) => { e.preventDefault(); submit(false); }}>
+        <label class="sr" for="composer">Add a task</label>
+        <input id="composer" ref=${inRef} autocomplete="off" value=${text} onInput=${onInput} onKeyDown=${onKey} onPaste=${onPaste}
+          placeholder=${sticky ? 'Next task…' : 'Add a task: Call Jaipur leads @vivek fri !1 #daily'} />
+        ${title && title.toLowerCase() !== text.trim().toLowerCase() ? html`<span class="ctitle" title="Task title">→ ${title.length > 40 ? title.slice(0, 40) + '…' : title}</span>` : null}
+        <button type="submit" aria-label=${due_date ? 'Add task' : 'Add task, pick a date first'} disabled=${busy || !title}><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5"/><path d="M6 11l6-6 6 6"/></svg></button>
+      </form>
+      ${show ? html`<div class="ckeys"><kbd>Enter</kbd> add · <kbd>Shift</kbd>+<kbd>Enter</kbd> add another · <kbd>@</kbd> owner · <kbd>#</kbd> list · <kbd>!1</kbd> urgent</div>` : null}
+    </div>
+  </div>`;
+}
+function PlacePicker({ ctx, onPick }) {
+  const [q, setQ] = useState('');
+  const s = q.toLowerCase();
+  const depts = ctx.depts.filter((d) => !s || d.name.toLowerCase().includes(s) || ctx.lists.some((l) => l.department_id === d.id && l.name.toLowerCase().includes(s)));
+  return html`<input class="field" placeholder="Department or list…" aria-label="Search departments and lists" value=${q} onInput=${(e) => setQ(e.target.value)} ref=${(el) => el && !q && setTimeout(() => el.focus(), 0)} />
+    <div class="opts">${depts.map((d) => html`<div>
+      <button class="opt" style="font-weight:600" onClick=${() => onPick(d.id, null)}><span class="ddot" style=${'background:' + ctx.deptColor(d.id)}></span>${d.name}</button>
+      ${ctx.lists.filter((l) => l.department_id === d.id && (!s || l.name.toLowerCase().includes(s) || d.name.toLowerCase().includes(s))).map((l) => html`<button class="opt" style="padding-left:26px" onClick=${() => onPick(d.id, l.id)}><${LIcon} name=${l.name} sm />${l.name}</button>`)}
+    </div>`)}</div>`;
+}
 /* ---------- task sheet: new task (explicit add) and task panel (autosave) ---------- */
 
 function TaskSheet({ ctx, sheet, close }) {
