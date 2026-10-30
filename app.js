@@ -1477,10 +1477,54 @@ function Composer({ ctx, deptHint, listHint }) {
   const inRef = useRef();
   const wrapRef = useRef();
   const aiTimer = useRef();
+  const [listening, setListening] = useState(false);
+  const [autoAdd, setAutoAdd] = useState(false);
+  const recRef = useRef(null);
+  const SR = typeof window !== 'undefined' && (window.SpeechRecognition || window.webkitSpeechRecognition);
+  function stopMic() { try { recRef.current?.stop(); } catch (_) {} }
+  function startMic() {
+    if (!SR) return ctx.setToast({ text: 'Voice input isn’t supported in this browser. Use Chrome, Edge or Safari, or your phone keyboard’s mic.' });
+    if (listening) return stopMic();
+    const r = new SR();
+    r.lang = 'en-IN'; r.interimResults = true; r.continuous = true; r.maxAlternatives = 1;
+    let finalText = text.trim() ? text.trim() + ' ' : '';
+    let silence;
+    const arm = () => { clearTimeout(silence); silence = setTimeout(() => { try { r.stop(); } catch (_) {} }, 3500); };
+    r.onresult = (e) => {
+      let interim = '';
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const t = e.results[i][0].transcript;
+        if (e.results[i].isFinal) finalText += t.trim() + ' '; else interim += t;
+      }
+      setText((finalText + interim).replace(/\s+/g, ' ').replace(/^\s/, ''));
+      arm();
+    };
+    r.onerror = (e) => { setListening(false); if (e.error === 'not-allowed' || e.error === 'service-not-allowed') ctx.setToast({ text: 'Allow microphone access for this site to use voice.' }); else if (e.error !== 'no-speech' && e.error !== 'aborted') ctx.setToast({ text: 'Voice input stopped. Try again.' }); };
+    r.onend = () => {
+      clearTimeout(silence); setListening(false); recRef.current = null;
+      const said = finalText.trim();
+      if (/\b(next task|new task|another task)\b/i.test(said)) {
+        const lines = said.split(/\b(?:next task|new task|another task)\b[,.]?/i).map((x) => x.trim()).filter(Boolean);
+        setText('');
+        ctx.setSheet({ mode: 'notes', text: lines.map((l) => '- ' + l).join('\n'), dept: deptHint });
+      } else if (/\b(add it|add task|add this|save it|save task|save this)[.!]?$/i.test(said)) {
+        setText(said.replace(/[,.]?\s*\b(add it|add task|add this|save it|save task|save this)[.!]?$/i, '').trim());
+        setAutoAdd(true);
+      } else setTimeout(() => inRef.current?.focus(), 0);
+    };
+    recRef.current = r;
+    try { r.start(); setListening(true); arm(); } catch (_) { setListening(false); }
+  }
+  useEffect(() => () => stopMic(), []);
+  useEffect(() => { if (autoAdd) { setAutoAdd(false); submit(false); } }, [autoAdd]);
   const ctxDefault = { department_id: deptHint || null, task_list_id: deptHint && listHint && listHint !== 'none' ? listHint : null };
 
   useEffect(() => {
-    const k = (e) => { if (e.key === 'n' && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName) && !e.metaKey && !e.ctrlKey && !e.altKey) { e.preventDefault(); inRef.current?.focus(); } };
+    const k = (e) => {
+      const typing = /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName);
+      if (e.key === 'n' && !typing && !e.metaKey && !e.ctrlKey && !e.altKey) { e.preventDefault(); inRef.current?.focus(); }
+      if (e.key === 'm' && !typing && !e.metaKey && !e.ctrlKey && !e.altKey) { e.preventDefault(); document.getElementById('micbtn')?.click(); }
+    };
     const c = (e) => { const d = e.detail || {}; if (typeof d === 'string') setText(d); else { if (d.text) setText(d.text); setOv((o) => ({ ...o, ...(d.ov || {}) })); } setTimeout(() => inRef.current?.focus(), 0); };
     const out = (e) => { if (wrapRef.current && !wrapRef.current.contains(e.target)) setPop(null); };
     window.addEventListener('keydown', k); document.addEventListener('bs-compose', c); document.addEventListener('mousedown', out);
@@ -1568,7 +1612,7 @@ function Composer({ ctx, deptHint, listHint }) {
   }
   const setO = (k, v) => { setOv((x) => ({ ...x, ...k })); setPop(null); setTimeout(() => inRef.current?.focus(), 0); };
   const td = today();
-  const show = text.trim() || sticky || Object.keys(ov).length;
+  const show = text.trim() || sticky || Object.keys(ov).length || listening;
   const placeLabel = list_id && ctx.list(list_id)?.department_id === dept_id ? `${ctx.dept(dept_id)?.name} / ${ctx.list(list_id)?.name}` : ctx.dept(dept_id)?.name;
   const onP = ctx.person(owner_id);
 
@@ -1592,11 +1636,14 @@ function Composer({ ctx, deptHint, listHint }) {
       <form onSubmit=${(e) => { e.preventDefault(); submit(false); }}>
         <label class="sr" for="composer">Add a task</label>
         <input id="composer" ref=${inRef} autocomplete="off" value=${text} onInput=${onInput} onKeyDown=${onKey} onPaste=${onPaste}
-          placeholder=${sticky ? 'Next task…' : 'Add a task: Call Jaipur leads @vivek fri !1 #daily'} />
+          placeholder=${listening ? 'Listening… say the task, owner and date' : sticky ? 'Next task…' : 'Add a task: Call Jaipur leads @vivek fri !1 #daily'} />
         ${title && title.toLowerCase() !== text.trim().toLowerCase() ? html`<span class="ctitle" title="Task title">→ ${title.length > 40 ? title.slice(0, 40) + '…' : title}</span>` : null}
+        ${SR ? html`<button type="button" id="micbtn" class=${'micbtn' + (listening ? ' on' : '')} aria-pressed=${listening} aria-label=${listening ? 'Stop listening' : 'Speak a task (M)'} title=${listening ? 'Stop' : 'Speak a task (M)'} onClick=${startMic}>
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button>` : null}
         <button type="submit" aria-label=${due_date ? 'Add task' : 'Add task, pick a date first'} disabled=${busy || !title}><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5"/><path d="M6 11l6-6 6 6"/></svg></button>
       </form>
-      ${show ? html`<div class="ckeys"><kbd>Enter</kbd> add · <kbd>Shift</kbd>+<kbd>Enter</kbd> add another · <kbd>@</kbd> owner · <kbd>#</kbd> list · <kbd>!1</kbd> urgent</div>` : null}
+      ${listening ? html`<div class="ckeys listen">Speak naturally: “Vivek to call Jaipur leads by Friday, urgent”. End with “add it” to save straight away, or say “next task” between tasks to add several. A pause stops listening.</div>`
+        : show ? html`<div class="ckeys"><kbd>Enter</kbd> add · <kbd>Shift</kbd>+<kbd>Enter</kbd> add another · <kbd>@</kbd> owner · <kbd>#</kbd> list · <kbd>!1</kbd> urgent · <kbd>M</kbd> speak</div>` : null}
     </div>
   </div>`;
 }
