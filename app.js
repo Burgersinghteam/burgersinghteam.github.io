@@ -235,6 +235,7 @@ function App() {
     load();
     const ch = sb.channel('live')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, softLoad)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'task_collaborators' }, softLoad)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'task_updates' }, softLoad)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'date_change_requests' }, softLoad)
       .subscribe();
@@ -292,7 +293,7 @@ function makeCtx({ me, data, setData, load, setSheet, setToast, setPalette, pins
   const canSeeStats = (pid) => isAdmin || pid === me.id || members.some((m) => m.person_id === pid && headDepts.includes(m.department_id));
   const canDecide = (t) => isAdmin || isHead(t.department_id) || t.created_by === me.id;
   const canRedate = (t) => isAdmin || isHead(t.department_id) || t.created_by === me.id;
-  const canEdit = (t) => isAdmin || isHead(t.department_id) || t.owner_id === me.id || t.created_by === me.id;
+  const canEdit = (t) => isAdmin || isHead(t.department_id) || t.owner_id === me.id || t.created_by === me.id || (t.collaborators || []).includes(me.id);
   const canOwner = (t) => isAdmin || isHead(t.department_id) || t.created_by === me.id;
   const canManageLists = (d) => isAdmin || isHead(d);
   const open = () => tasks.filter((t) => !isClosed(t));
@@ -310,6 +311,17 @@ function makeCtx({ me, data, setData, load, setSheet, setToast, setPalette, pins
   }
   const save = async (t, fields, onSaved) => { if (await update(t.id, fields, null)) onSaved?.(t.id); };
   const done = (t) => update(t.id, { status: 'done', completed_at: new Date().toISOString() }, 'Marked done', { status: t.status, completed_at: null });
+  const collabs = (t) => t.collaborators || [];
+  const isCollab = (t) => collabs(t).includes(me.id);
+  async function addCollab(t, pid) {
+    if (pid === t.owner_id || collabs(t).includes(pid)) return;
+    const { error } = await sb.from('task_collaborators').insert({ task_id: t.id, person_id: pid, added_by: me.id });
+    setToast({ text: error ? error.message : `${first(person(pid)?.name)} added as collaborator` }); load();
+  }
+  async function removeCollab(t, pid) {
+    const { error } = await sb.from('task_collaborators').delete().eq('task_id', t.id).eq('person_id', pid);
+    setToast({ text: error ? error.message : `${first(person(pid)?.name)} removed` }); load();
+  }
   async function hold(t, reason) {
     if (reason) await sb.from('task_updates').insert({ task_id: t.id, author_id: me.id, body: `On hold: ${reason}` });
     await update(t.id, { status: 'on_hold' }, 'Put on hold', { status: t.status }); load();
@@ -403,7 +415,7 @@ function makeCtx({ me, data, setData, load, setSheet, setToast, setPalette, pins
   const removePin = (name) => { const p = pins.filter((x) => x.name !== name); setPins(p); savePins(p); };
 
   return { me, data, people, allPeople, depts, members, lists, tasks, dcr, person, dept, list, deptColor, isAdmin, myDepts, headDepts, isHead, canSeeStats, canDecide, canRedate, canEdit, canOwner, canManageLists,
-    open, mine, ownerDept, update, save, done, reopen, hold, cancel, needsYou, decideDate, approveOther, decideRequest, nudge, readUpdate, createList, moveList, renameList, deleteList, moveTo, load, setToast, setSheet, setPalette,
+    open, mine, ownerDept, update, save, done, reopen, hold, cancel, collabs, isCollab, addCollab, removeCollab, needsYou, decideDate, approveOther, decideRequest, nudge, readUpdate, createList, moveList, renameList, deleteList, moveTo, load, setToast, setSheet, setPalette,
     openTask: (t) => setSheet({ mode: 'edit', id: t.id }),
     newTask: (p = {}) => { const ov = {}; if (p.department_id) ov.department_id = p.department_id; if (p.task_list_id) ov.task_list_id = p.task_list_id; if (p.owner_id) ov.owner_id = p.owner_id; document.dispatchEvent(new CustomEvent('bs-compose', { detail: { ov } })); }, pins, addPin, removePin };
 }
@@ -459,10 +471,11 @@ function SideList({ ctx, d, l, active }) {
 function ListMenu({ ctx, l }) {
   const [open, setOpen, ref] = usePop();
   const [moving, setMoving] = useState(false);
+  const [pos, setPos] = useState(null);
   const targets = ctx.depts.filter((x) => x.id !== l.department_id && (ctx.isAdmin || ctx.isHead(x.id)));
-  return html`<span class="anchor lmenu" ref=${ref}>
-    <button class="iconbtn" aria-label=${'Options for ' + l.name} onClick=${(e) => { e.preventDefault(); setOpen(!open); setMoving(false); }}>⋯</button>
-    ${open ? html`<div class="pop" style="right:0;left:auto;min-width:230px">${!moving ? html`
+  return html`<span class=${'anchor lmenu' + (open ? ' open' : '')} ref=${ref}>
+    <button class="iconbtn" aria-label=${'Options for ' + l.name} aria-expanded=${open} onClick=${(e) => { e.preventDefault(); e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); const top = Math.min(r.bottom + 4, window.innerHeight - 280); setPos({ top: Math.max(8, top), left: Math.max(8, Math.min(r.left - 8, window.innerWidth - 260)) }); setOpen(!open); setMoving(false); }}>⋯</button>
+    ${open ? html`<div class="pop lmenupop" style=${`position:fixed;top:${pos?.top || 0}px;left:${pos?.left || 0}px;right:auto;min-width:240px;max-height:min(420px, calc(100vh - ${(pos?.top || 0) + 16}px));overflow-y:auto`}>${!moving ? html`
       <button class="opt" onClick=${() => { setOpen(false); ctx.renameList(l); }}>Rename</button>
       <button class="opt" onClick=${() => setMoving('owner')}>Default owner<span class="r">${l.default_owner_id ? first(ctx.person(l.default_owner_id)?.name) : 'None'} ›</span></button>
       ${targets.length ? html`<button class="opt" onClick=${() => setMoving(true)}>Move to another department<span class="r">›</span></button>` : ''}
@@ -484,7 +497,7 @@ function Sidebar({ ctx, view, route }) {
     isAdmin && ['overview', 'Overview', ctx.needsYou().length],
     ['mine', 'My tasks', ctx.mine().filter(isActive).length],
     (isAdmin || ctx.headDepts.length) && ['all', 'All tasks', ctx.open().filter(isActive).length],
-    isAdmin && ['people', 'Admin', ctx.people.length],
+    isAdmin && ['people', 'Admin', ''],
   ].filter(Boolean);
   return html`<nav class="side" aria-label="Main">
     <div class="brand"><span class="logo">${I.check}</span>BS Tasks</div>
@@ -531,7 +544,7 @@ function Palette({ ctx, close }) {
       out.push({ k: 'Try', label: 'franchise sales due this week', run: () => setQ('franchise sales due this week') });
       out.push({ k: 'Try', label: 'no update offline revenue', run: () => setQ('no update offline revenue') });
       ctx.depts.slice(0, 6).forEach((d) => out.push({ k: 'Go to', label: d.name, run: () => { location.hash = 'dept?dept=' + d.id; } }));
-      if (ctx.isAdmin) { out.push({ k: 'Go to', label: 'Admin: People', run: () => { location.hash = 'people'; } }); out.push({ k: 'Go to', label: 'Admin: Activity log', run: () => { location.hash = 'people?tab=log'; } }); }
+      if (ctx.isAdmin) { out.push({ k: 'Go to', label: 'Admin: AI assistant', run: () => { location.hash = 'people?tab=ai'; } }); out.push({ k: 'Go to', label: 'Admin: People', run: () => { location.hash = 'people?tab=people'; } }); out.push({ k: 'Go to', label: 'Admin: Activity log', run: () => { location.hash = 'people?tab=log'; } }); }
     }
     return out;
   }, [q]);
@@ -672,6 +685,24 @@ function Avatar({ ctx, id, size }) {
   const p = ctx.person(id);
   return html`<span class="who-av" title=${p?.name} style=${`background:${avColor(id)}${size ? `;width:${size}px;height:${size}px;border-radius:${size / 2}px` : ''}`}>${initials(p?.name || '?')}</span>`;
 }
+function CollabStack({ ctx, t }) {
+  const [open, setOpen, ref] = usePop();
+  const ids = ctx.collabs(t);
+  const can = ctx.canOwner(t) || ctx.isCollab(t);
+  if (!ids.length && !can) return null;
+  return html`<span class=${'anchor cstack' + (ids.length ? ' has' : '')} ref=${ref}>
+    <button class="cstackbtn" disabled=${!can && !ids.length} title=${ids.length ? 'Collaborators: ' + ids.map((id) => ctx.person(id)?.name).join(', ') : 'Add a collaborator'} aria-label=${ids.length ? `${ids.length} collaborators` : 'Add collaborator'} onClick=${() => setOpen(!open)}>
+      ${ids.slice(0, 2).map((id) => html`<span class="cav" style=${'background:' + avColor(id)}>${initials(ctx.person(id)?.name || '?')}</span>`)}
+      ${ids.length > 2 ? html`<span class="cmore">+${ids.length - 2}</span>` : null}
+      ${!ids.length ? html`<span class="cplus">+</span>` : null}
+    </button>
+    ${open ? html`<div class="pop" role="dialog" aria-label="Collaborators" style="min-width:260px">
+      <span class="note" style="padding:2px 6px">Owner: ${ctx.person(t.owner_id)?.name}. Collaborators can see the task, post updates and change its status.</span>
+      ${ids.map((id) => html`<div class="opt" style="cursor:default"><${Avatar} ctx=${ctx} id=${id} size=${20} />${ctx.person(id)?.name}${ctx.canOwner(t) || id === ctx.me.id ? html`<button class="iconbtn" style="margin-left:auto" aria-label=${'Remove ' + ctx.person(id)?.name} onClick=${() => ctx.removeCollab(t, id)}>×</button>` : null}</div>`)}
+      ${ctx.canOwner(t) ? html`<${OwnerList} ctx=${{ ...ctx, people: ctx.people.filter((p) => p.id !== t.owner_id && !ids.includes(p.id)) }} onPick=${(p) => { ctx.addCollab(t, p.id); }} />` : null}
+    </div>` : null}
+  </span>`;
+}
 function OwnerPick({ ctx, t, onSaved }) {
   const [open, setOpen, ref] = usePop();
   const [q, setQ] = useState('');
@@ -735,6 +766,7 @@ function TRow({ ctx, t, sel, toggle, selecting, showList = true, showDept = fals
       <button class=${'updc' + (t.last_update_at ? ' has' : '')} disabled=${!can} title=${t.last_update_body ? `Latest: ${t.last_update_body}. Click to update` : 'Post an update or change status'} aria-label=${'Update ' + t.title} onClick=${() => setQu(!qu)}>${I.bubble}<span class="lab">${t.last_update_at ? ago(t.last_update_at).replace(' ago', '') : 'Update'}</span></button>
       <${Prio} ctx=${ctx} t=${t} />
       <${DateChip} ctx=${ctx} t=${t} />
+      <${CollabStack} ctx=${ctx} t=${t} />
       <${OwnerPick} ctx=${ctx} t=${t} />
     </div>
     ${peek && !qu ? html`<${Peek} ctx=${ctx} t=${t} />` : ''}
@@ -1088,6 +1120,7 @@ function Mine({ ctx }) {
   const mine = ctx.mine();
   const open = mine.filter((t) => isActive(t) && !(t.snoozed_until && t.snoozed_until > td) && (!day || t.due_date === day));
   const held = mine.filter((t) => t.status === 'on_hold');
+  const involved = ctx.tasks.filter((t) => isActive(t) && t.owner_id !== ctx.me.id && (t.collaborators || []).includes(ctx.me.id));
   const approvals = ctx.isAdmin ? [] : ctx.dcr.filter((r) => { const t = ctx.tasks.find((x) => x.id === r.task_id); return t && ctx.canDecide(t); });
   const waiting = ctx.open().filter((t) => t.blocked_on_person_id === ctx.me.id);
   const sorted = (a) => a.sort((x, y) => sortTasks(x, y, 'due'));
@@ -1098,6 +1131,7 @@ function Mine({ ctx }) {
     { key: 'k', label: 'This week', items: sorted(open.filter((t) => t.due_date > td && t.due_date <= we)) },
     { key: 'l', label: 'Later', items: sorted(open.filter((t) => t.due_date > we)) },
     { key: 'n', label: 'Needs priority and date', items: sorted(open.filter((t) => !t.due_date)) },
+    { key: 'i', label: 'Involved in (others own these)', items: sorted(involved) },
     { key: 'h', label: 'On hold', items: held },
   ].filter((g) => g.items.length).map((g) => ({ ...g, n: g.items.length }));
   setNav(groups.flatMap((g) => g.items));
@@ -1415,8 +1449,12 @@ function suggestList(title, ctx, deptId, ownerId) {
 }
 function parseTaskText(raw, ctx) {
   let s = ` ${raw} `;
-  const out = { owner_id: null, due_date: null, priority: null, department_id: null, task_list_id: null };
+  const out = { owner_id: null, due_date: null, priority: null, department_id: null, task_list_id: null, collaborators: [] };
   const cut = (str) => { s = s.replace(str, ' '); };
+  for (const m of [...s.matchAll(/\s\+([a-z][\w.-]*)/gi)]) {
+    const q = m[1].toLowerCase(); const hit = ctx.people.filter((p) => p.name.toLowerCase().split(' ').some((w) => w.startsWith(q)));
+    if (hit.length === 1) { if (!out.collaborators.includes(hit[0].id)) out.collaborators.push(hit[0].id); cut(m[0]); }
+  }
   // priority (low first so "not urgent" is not read as urgent)
   const low = s.match(/[\s,(]!(3|low)\b|[\s,(](not urgent|no rush|no hurry|low[- ]priority|whenever possible|whenever|when free|p3)\b/i);
   if (low) { out.priority = 'P3'; cut(low[0]); }
@@ -1561,6 +1599,7 @@ function Composer({ ctx, deptHint, listHint }) {
   const ownerGuess = ownerGuessObj?.id || null;
   const owner_id = explicitOwner || ownerGuess || ctx.me.id;
   const ownerGuessed = !explicitOwner && !!ownerGuess;
+  const collabIds = [...new Set([...(ov.collaborators || []), ...(parsed.collaborators || [])])].filter((id) => id !== owner_id);
   const list_id = ov.task_list_id !== undefined ? ov.task_list_id : (sticky?.task_list_id ?? parsed.task_list_id ?? (ai && ai.text === text ? ai.task_list_id : null) ?? ctxDefault.task_list_id ?? guess?.task_list_id ?? null);
   const listGuessed = ov.task_list_id === undefined && !sticky?.task_list_id && !parsed.task_list_id && !ctxDefault.task_list_id && guess && list_id === guess.task_list_id;
   const dept_id = ov.department_id || (list_id && ctx.list(list_id)?.department_id) || sticky?.department_id || parsed.department_id || (ai && ai.text === text ? ai.department_id : null) || ctxDefault.department_id || ctx.ownerDept(owner_id) || ctx.myDepts[0] || ctx.depts[0]?.id;
@@ -1588,18 +1627,20 @@ function Composer({ ctx, deptHint, listHint }) {
     const v = e.target.value; setText(v);
     if (!v.trim()) { setOv({}); setAi(null); }
     const pos = e.target.selectionStart; const before = v.slice(0, pos);
-    const m = before.match(/(?:^|\s)([@#])([\w&/-]*)$/);
+    const m = before.match(/(?:^|\s)([@#+])([\w&/-]*)$/);
     if (m) setAc({ kind: m[1], q: m[2].toLowerCase(), start: pos - m[2].length - 1, end: pos }); else setAc(null);
     setAcI(0);
   }
-  const acOpts = !ac ? [] : ac.kind === '@'
-    ? ctx.people.filter((p) => p.name.toLowerCase().split(' ').some((w) => w.startsWith(ac.q)) || p.name.toLowerCase().startsWith(ac.q)).slice(0, 7).map((p) => ({ label: p.name, sub: ctx.dept(ctx.ownerDept(p.id))?.name || '', apply: { owner_id: p.id } }))
+  const acOpts = !ac ? [] : (ac.kind === '+' && !ac.q.length) ? [] : (ac.kind === '@' || ac.kind === '+')
+    ? ctx.people.filter((p) => p.name.toLowerCase().split(' ').some((w) => w.startsWith(ac.q)) || p.name.toLowerCase().startsWith(ac.q)).slice(0, 7).map((p) => ({ label: p.name, sub: ac.kind === '+' ? 'Collaborator' : ctx.dept(ctx.ownerDept(p.id))?.name || '', apply: ac.kind === '+' ? { collab: p.id } : { owner_id: p.id } }))
     : [...ctx.lists.filter((l) => l.name.toLowerCase().includes(ac.q.replace(/[-_]/g, ' '))).map((l) => ({ label: l.name, sub: ctx.dept(l.department_id)?.name, apply: { task_list_id: l.id, department_id: l.department_id } })),
        ...ctx.depts.filter((d) => d.name.toLowerCase().includes(ac.q)).map((d) => ({ label: d.name, sub: 'Department', apply: { department_id: d.id, task_list_id: null } }))].slice(0, 8);
   function chooseAc(o) {
     if (!o) return;
     setText((t) => (t.slice(0, ac.start) + t.slice(ac.end)).replace(/\s{2,}/g, ' '));
-    setOv((x) => ({ ...x, ...o.apply })); setAc(null);
+    if (o.apply.collab) setOv((x) => ({ ...x, collaborators: [...new Set([...(x.collaborators || []), o.apply.collab])] }));
+    else setOv((x) => ({ ...x, ...o.apply }));
+    setAc(null);
     setTimeout(() => inRef.current?.focus(), 0);
   }
 
@@ -1611,6 +1652,8 @@ function Composer({ ctx, deptHint, listHint }) {
     const { data: saved, error } = await sb.from('tasks').insert(row).select().single();
     setBusy(false);
     if (error) return ctx.setToast({ text: error.message });
+    const cl = collabIds.filter((id) => id !== row.owner_id);
+    if (cl.length) await sb.from('task_collaborators').insert(cl.map((id) => ({ task_id: saved.id, person_id: id, added_by: ctx.me.id })));
     ctx.setToast({ text: `Added: ${row.title} → ${row.owner_id === ctx.me.id ? 'you' : first(ctx.person(row.owner_id)?.name)}, ${shortDue(row.due_date)}`,
       action: { label: 'Edit', fn: () => ctx.setSheet({ mode: 'edit', id: saved.id }) },
       undo: async () => { await sb.from('tasks').delete().eq('id', saved.id); ctx.load(); } });
@@ -1641,7 +1684,7 @@ function Composer({ ctx, deptHint, listHint }) {
 
   return html`<div class="composer" ref=${wrapRef}>
     <div class="cbox2">
-      ${ac && acOpts.length ? html`<div class="acpop" role="listbox">${acOpts.map((o, n) => html`<button class="opt" role="option" aria-selected=${n === acI} onMouseDown=${(e) => { e.preventDefault(); chooseAc(o); }}>${ac.kind === '@' ? html`<${Avatar} ctx=${ctx} id=${o.apply.owner_id} size=${20} />` : o.apply.task_list_id ? html`<${LIcon} name=${o.label} sm />` : html`<span class="ddot" style=${'background:' + ctx.deptColor(o.apply.department_id)}></span>`}${o.label}<span class="r">${o.sub}</span></button>`)}<div class="achint">Tab or Enter to pick</div></div>` : null}
+      ${ac && acOpts.length ? html`<div class="acpop" role="listbox">${acOpts.map((o, n) => html`<button class="opt" role="option" aria-selected=${n === acI} onMouseDown=${(e) => { e.preventDefault(); chooseAc(o); }}>${ac.kind === '@' || ac.kind === '+' ? html`<${Avatar} ctx=${ctx} id=${o.apply.owner_id || o.apply.collab} size=${20} />` : o.apply.task_list_id ? html`<${LIcon} name=${o.label} sm />` : html`<span class="ddot" style=${'background:' + ctx.deptColor(o.apply.department_id)}></span>`}${o.label}<span class="r">${o.sub}</span></button>`)}<div class="achint">Tab or Enter to pick</div></div>` : null}
       ${pop ? html`<div class="chippop">
         ${pop === 'date' ? html`<span class="note">${due_date ? 'Change date' : 'When is it due?'}</span><div class="qchips">${[['Today', td], ['Tomorrow', addDays(td, 1)], ['Fri', parseQuick('fri')], ['Mon', nextDow(0)], ['+1 week', addDays(td, 7)], ['End of month', parseDateWords('eom').date]].map(([l, d]) => html`<button class="qchip" aria-pressed=${due_date === d} onClick=${() => setO({ due_date: d })}>${l}</button>`)}</div><input type="date" class="field" aria-label="Pick a date" min=${td} onChange=${(e) => e.target.value && setO({ due_date: e.target.value })} />` : null}
         ${pop === 'owner' ? html`<${OwnerList} ctx=${ctx} onPick=${(p) => setO({ owner_id: p.id })} />` : null}
@@ -1653,6 +1696,7 @@ function Composer({ ctx, deptHint, listHint }) {
         <button class=${'cchip' + (due_date ? ' set' : ' need') + (fromAi('due_date') ? ' ai' : '')} onClick=${() => setPop(pop === 'date' ? null : 'date')} title="Due date (type fri, tomorrow, 12 nov)">${I.cal}${due_date ? fmtDate(due_date) : 'Add date'}</button>
         <button class=${'cchip prio-' + priority + (ov.priority || parsed.priority ? ' set' : '')} onClick=${() => setPop(pop === 'prio' ? null : 'prio')} title="Priority (type !1, !2, !3 or urgent)">${PRI[priority]}</button>
         <button class=${'cchip' + (ov.department_id || ov.task_list_id || parsed.department_id || list_id ? ' set' : '') + (fromAi('department_id') || listGuessed ? ' ai' : '')} onClick=${() => setPop(pop === 'place' ? null : 'place')} title=${listGuessed ? 'List suggested from where similar tasks sit. Click to change.' : 'Department or list (type #name)'}>${listGuessed ? I.spark : null}<span class="ddot" style=${'background:' + ctx.deptColor(dept_id)}></span>${placeLabel}</button>
+        ${collabIds.length ? html`<span class="cchip set" title="Collaborators (type +name)">+ ${collabIds.map((id) => first(ctx.person(id)?.name)).join(', ')}<button class="iconbtn" style="width:18px;height:18px;margin-left:2px" aria-label="Clear collaborators" onClick=${() => { setOv((x) => ({ ...x, collaborators: [] })); setText((t) => t.replace(/\s\+[a-z][\w.-]*/gi, '')); }}>×</button></span>` : null}
         ${aiBusy ? html`<span class="cnote">${I.spark} reading…</span>` : null}
         ${sticky ? html`<span class="cnote">Adding more for ${first(ctx.person(sticky.owner_id || ctx.me.id)?.name)}, Esc to stop</span>` : null}
       </div>` : null}
@@ -1666,7 +1710,7 @@ function Composer({ ctx, deptHint, listHint }) {
         <button type="submit" aria-label=${due_date ? 'Add task' : 'Add task, pick a date first'} disabled=${busy || !title}><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5"/><path d="M6 11l6-6 6 6"/></svg></button>
       </form>
       ${listening ? html`<div class="ckeys listen">Speak naturally: “Vivek to call Jaipur leads by Friday, urgent”. End with “add it” to save straight away, or say “next task” between tasks to add several. A pause stops listening.</div>`
-        : show ? html`<div class="ckeys"><kbd>Enter</kbd> add · <kbd>Shift</kbd>+<kbd>Enter</kbd> add another · <kbd>@</kbd> owner · <kbd>#</kbd> list · <kbd>!1</kbd> urgent · <kbd>M</kbd> speak</div>` : null}
+        : show ? html`<div class="ckeys"><kbd>Enter</kbd> add · <kbd>Shift</kbd>+<kbd>Enter</kbd> add another · <kbd>@</kbd> owner · <kbd>+</kbd> collaborator · <kbd>#</kbd> list · <kbd>!1</kbd> urgent · <kbd>M</kbd> speak</div>` : null}
     </div>
   </div>`;
 }
@@ -1726,11 +1770,12 @@ function suggestOwner(title, ctx, deptId, listId) {
 /* ---------- People and access (admin) ---------- */
 function PeopleAdmin({ ctx, route }) {
   const tab = route?.tab || 'people';
-  const tabs = [['people', 'People'], ['depts', 'Departments'], ['email', 'Email settings'], ['log', 'Activity log']];
+  const tabs = [['ai', 'AI assistant'], ['people', 'People'], ['depts', 'Departments'], ['email', 'Email settings'], ['log', 'Activity log']];
   if (!ctx.isAdmin) return html`<div class="topbar"><h1>Admin</h1></div><p class="empty">Only an admin can open this page.</p>`;
   return html`
     <div class="topbar"><h1>Admin</h1>
       <div class="tabs" role="tablist">${tabs.map(([k, l]) => html`<a role="tab" class="tab" style="text-decoration:none" href=${'#people?tab=' + k} aria-selected=${tab === k}>${l}</a>`)}</div></div>
+    ${tab === 'ai' ? html`<${AiAdmin} ctx=${ctx} />` : null}
     ${tab === 'people' ? html`<${PeopleTab} ctx=${ctx} />` : null}
     ${tab === 'depts' ? html`<div class="page"><${DeptAdmin} ctx=${ctx} /></div>` : null}
     ${tab === 'email' ? html`<${EmailSettings} ctx=${ctx} />` : null}
@@ -1895,6 +1940,7 @@ function taskLine(ctx, a, title) {
     date_changed: `${who} moved “${title}”${d.from ? ` from ${fmtDate(d.from)}` : ''} to ${d.to ? fmtDate(d.to) : 'no date'}`,
     edited: `${who} changed priority of “${title}”${d.priority_to ? ` to ${PRI[d.priority_to]}` : ''}`,
     acknowledged: `${who} acknowledged “${title}”`, snoozed: `${who} snoozed “${title}”`,
+    collab_added: `${who} added ${ctx.person(d.person)?.name || 'someone'} as collaborator on “${title}”`, collab_removed: `${who} removed ${ctx.person(d.person)?.name || 'someone'} from “${title}”`,
     nudged: `${who} nudged ${ctx.person(d.to)?.name || 'the owner'} on “${title}”`, asked_update: `${who} asked ${ctx.person(d.to)?.name || 'the owner'} for an update on “${title}”`,
   };
   return m[a.action] || `${who}: ${a.action} on “${title}”`;
@@ -1931,6 +1977,103 @@ function auditLine(ctx, x) {
   }
   if (x.entity === 'settings') return `${who} changed email settings (${n.key?.replace('_', ' ')})`;
   return null;
+}
+
+/* ---------- AI assistant for admins: plain-language bulk changes ---------- */
+const AI_EXAMPLES = [
+  'Move all of Vivek’s resale tasks to Soumay',
+  'Set every Pre-Live task without a date to next Friday, normal priority',
+  'Add Harsh and Himalaya as collaborators on all Pre-Live tasks due this week',
+  'Make all Offline Revenue tasks with “bulk order” in the title urgent and give them to Nikita',
+  'Put all Critical Stores tasks on hold',
+];
+function AiAdmin({ ctx }) {
+  const [text, setText] = useState('');
+  const [plan, setPlan] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [sel, setSel] = useState({});
+  const [history, setHistory] = useState([]);
+  async function preview() {
+    if (text.trim().length < 4) return;
+    setBusy(true); setPlan(null);
+    const r = await aiCall('plan', { instruction: text });
+    setBusy(false);
+    setPlan(r);
+    setSel(Object.fromEntries((r.ops || []).map((o, i) => [i, true])));
+  }
+  const T = (id) => ctx.tasks.find((t) => t.id === id);
+  const PR = { P1: 'Urgent', P2: 'Normal', P3: 'Low' };
+  const ST = { open: 'In progress', blocked: 'Blocked', on_hold: 'On hold', done: 'Done', cancelled: 'Cancelled' };
+  function diffs(o) {
+    const t = T(o.task_id); if (!t) return [];
+    const out = [];
+    const s = o.set || {};
+    if (s.owner_id && s.owner_id !== t.owner_id) out.push(['Owner', first(ctx.person(t.owner_id)?.name), first(ctx.person(s.owner_id)?.name)]);
+    if (s.due_date && s.due_date !== t.due_date) out.push(['Due', t.due_date ? fmtDate(t.due_date) : 'none', fmtDate(s.due_date)]);
+    if (s.priority && s.priority !== t.priority) out.push(['Priority', PR[t.priority] || 'none', PR[s.priority]]);
+    if (s.status && s.status !== t.status) out.push(['Status', ST[t.status], ST[s.status]]);
+    if (s.department_id && s.department_id !== t.department_id) out.push(['Department', ctx.dept(t.department_id)?.name, ctx.dept(s.department_id)?.name]);
+    if (s.task_list_id && s.task_list_id !== t.task_list_id) out.push(['List', ctx.list(t.task_list_id)?.name || 'none', ctx.list(s.task_list_id)?.name]);
+    const cur = t.collaborators || [];
+    const add = (o.add || []).filter((id) => !cur.includes(id) && id !== (s.owner_id || t.owner_id));
+    const rem = (o.remove || []).filter((id) => cur.includes(id));
+    if (add.length) out.push(['Collaborators', '', '+ ' + add.map((id) => first(ctx.person(id)?.name)).join(', ')]);
+    if (rem.length) out.push(['Collaborators', '', '− ' + rem.map((id) => first(ctx.person(id)?.name)).join(', ')]);
+    return out;
+  }
+  const rows = (plan?.ops || []).map((o, i) => ({ o, i, t: T(o.task_id), d: diffs(o) })).filter((r) => r.t && r.d.length);
+  const chosen = rows.filter((r) => sel[r.i]);
+  async function apply() {
+    setBusy(true);
+    const groups = {};
+    for (const { o, t } of chosen) {
+      const s = { ...(o.set || {}) };
+      if (s.task_list_id && !s.department_id) s.department_id = ctx.list(s.task_list_id)?.department_id;
+      if (s.department_id && !s.task_list_id && s.department_id !== t.department_id) s.task_list_id = null;
+      if (s.owner_id && s.owner_id !== t.owner_id) s.acknowledged_at = s.owner_id === ctx.me.id ? new Date().toISOString() : null;
+      if (s.status === 'done' || s.status === 'cancelled') s.completed_at = new Date().toISOString();
+      const key = JSON.stringify(s);
+      if (Object.keys(s).length) (groups[key] ||= []).push(t.id);
+    }
+    let err = null;
+    for (const [k, ids] of Object.entries(groups)) { const { error } = await sb.from('tasks').update(JSON.parse(k)).in('id', ids); if (error) err = error; }
+    const adds = []; const rems = [];
+    for (const { o, t } of chosen) {
+      const owner = o.set?.owner_id || t.owner_id; const cur = t.collaborators || [];
+      (o.add || []).filter((id) => id !== owner && !cur.includes(id)).forEach((id) => adds.push({ task_id: t.id, person_id: id, added_by: ctx.me.id }));
+      (o.remove || []).filter((id) => cur.includes(id)).forEach((id) => rems.push([t.id, id]));
+    }
+    if (adds.length) { const { error } = await sb.from('task_collaborators').upsert(adds, { onConflict: 'task_id,person_id', ignoreDuplicates: true }); if (error) err = error; }
+    for (const [tid, pid] of rems) await sb.from('task_collaborators').delete().eq('task_id', tid).eq('person_id', pid);
+    setBusy(false);
+    if (err) return ctx.setToast({ text: err.message });
+    setHistory((h) => [{ text, n: chosen.length, at: new Date() }, ...h].slice(0, 8));
+    ctx.setToast({ text: `${chosen.length} tasks updated` }); ctx.load(); setPlan(null); setText('');
+  }
+  return html`<div class="page pad" style="padding-top:16px;max-width:980px">
+    <p class="note">Describe a change in plain words. You’ll see every task it affects, with before and after, and nothing changes until you apply. Private tasks are never sent to the AI.</p>
+    <textarea class="field" rows="3" style="width:100%;margin-top:8px;font-size:14.5px" placeholder="e.g. Move all of Vivek’s resale tasks to Soumay and make them due next Friday" value=${text}
+      onInput=${(e) => setText(e.target.value)} onKeyDown=${(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) preview(); }}></textarea>
+    <div class="actions" style="margin-top:8px"><button class="btn primary" disabled=${busy || text.trim().length < 4} onClick=${preview}>${busy && !plan ? 'Working it out…' : 'Preview changes'}</button><span class="note">⌘ Enter</span></div>
+    ${!plan && !busy ? html`<div class="qchips" style="margin-top:12px">${AI_EXAMPLES.map((x) => html`<button class="qchip" onClick=${() => setText(x)}>${x}</button>`)}</div>` : null}
+    ${plan?.error ? html`<p class="err">${plan.error}</p>` : null}
+    ${plan && !plan.error ? html`<div style="margin-top:16px">
+      ${plan.unclear ? html`<div class="banner"><span>?</span><span class="t">${plan.unclear}</span></div>` : null}
+      ${plan.summary ? html`<p style="font-weight:500;margin:0 0 6px">${I.spark} ${plan.summary}</p>` : null}
+      ${(plan.warnings || []).length ? html`<p class="note" style="color:var(--late)">${plan.warnings.join('. ')}</p>` : null}
+      ${rows.length ? html`
+        <div class="filterbar" style="padding:6px 0;border:none"><span class="note">${rows.length} tasks would change</span>
+          <button class="addfilter" onClick=${() => setSel(Object.fromEntries(rows.map((r) => [r.i, chosen.length !== rows.length])))}>${chosen.length === rows.length ? 'Untick all' : 'Tick all'}</button></div>
+        <div class="aiplan">${rows.map(({ o, i, t, d }) => html`<label class="aprow">
+          <input type="checkbox" checked=${!!sel[i]} onChange=${() => setSel({ ...sel, [i]: !sel[i] })} />
+          <span class="t"><b>${t.title}</b><span class="note">${ctx.dept(t.department_id)?.name}${t.task_list_id ? ' / ' + ctx.list(t.task_list_id)?.name : ''}</span></span>
+          <span class="d">${d.map(([f, a, b]) => html`<span class="dd"><span class="f">${f}</span>${a ? html`<s>${a}</s> → ` : null}<b>${b}</b></span>`)}</span>
+        </label>`)}</div>
+        <div class="actions" style="margin-top:12px"><button class="btn primary big" disabled=${busy || !chosen.length} onClick=${apply}>${busy ? 'Applying…' : `Apply to ${chosen.length} tasks`}</button><button class="btn ghost big" onClick=${() => setPlan(null)}>Discard</button></div>`
+      : !plan.unclear ? html`<p class="note">No tasks matched, or nothing would change. Try naming the person, department, list or words in the titles.</p>` : null}
+    </div>` : null}
+    ${history.length ? html`<div style="margin-top:24px"><span class="lbl">Applied this session</span>${history.map((h) => html`<div class="note">${h.at.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}: “${h.text}”, ${h.n} tasks</div>`)}<div class="note">Every change is in the Activity log.</div></div>` : null}
+  </div>`;
 }
 /* ---------- task sheet: new task (explicit add) and task panel (autosave) ---------- */
 
@@ -2022,7 +2165,7 @@ function TaskPanel({ ctx, id, close }) {
       sb.from('task_updates').select('*').eq('task_id', id).order('created_at', { ascending: false }),
       sb.from('task_activity').select('*').eq('task_id', id).order('created_at', { ascending: false }).limit(30),
     ]);
-    setUpdates([...(u.data || []).map((x) => ({ ...x, kind: 'u' })), ...(a.data || []).filter((x) => ['date_changed', 'reassigned', 'blocked', 'done', 'reopened', 'acknowledged', 'nudged', 'asked_update', 'on_hold', 'resumed', 'cancelled'].includes(x.action)).map((x) => ({ ...x, kind: 'a' }))]
+    setUpdates([...(u.data || []).map((x) => ({ ...x, kind: 'u' })), ...(a.data || []).filter((x) => ['date_changed', 'reassigned', 'blocked', 'done', 'reopened', 'acknowledged', 'nudged', 'asked_update', 'on_hold', 'resumed', 'cancelled', 'collab_added', 'collab_removed'].includes(x.action)).map((x) => ({ ...x, kind: 'a' }))]
       .sort((x, y) => y.created_at.localeCompare(x.created_at)));
   }
   if (!t) return html`<div class="scrim" onClick=${close}><div class="sheet" onClick=${(e) => e.stopPropagation()}><p>This task is not available. It may have been deleted or made private.</p><button class="btn" onClick=${close}>Close</button></div></div>`;
@@ -2090,6 +2233,11 @@ function TaskPanel({ ctx, id, close }) {
 
     <div style="border-top:1px solid var(--line);padding-top:14px;display:flex;flex-direction:column;gap:14px">
       <div><label class="lbl" for="own">Owner</label><select id="own" class="field" disabled=${!canOwner} value=${t.owner_id} onChange=${(e) => save({ owner_id: e.target.value, acknowledged_at: e.target.value === ctx.me.id ? new Date().toISOString() : null })}>${ctx.people.map((p) => html`<option value=${p.id}>${p.name}${p.id === ctx.me.id ? ' (me)' : ''}</option>`)}</select></div>
+      <div><span class="lbl">Collaborators</span><div class="pcollab">
+        ${ctx.collabs(t).map((id) => html`<span class="dchip"><${Avatar} ctx=${ctx} id=${id} size=${18} />${ctx.person(id)?.name}${canOwner || id === ctx.me.id ? html`<button aria-label=${'Remove ' + ctx.person(id)?.name} onClick=${() => ctx.removeCollab(t, id)}>×</button>` : null}</span>`)}
+        ${canOwner ? html`<select class="adddept" aria-label="Add collaborator" value="" onChange=${(e) => { if (e.target.value) ctx.addCollab(t, e.target.value); e.target.value = ''; }}><option value="">+ Add</option>${ctx.people.filter((p) => p.id !== t.owner_id && !ctx.collabs(t).includes(p.id)).map((p) => html`<option value=${p.id}>${p.name}</option>`)}</select>` : null}
+        ${!ctx.collabs(t).length && !canOwner ? html`<span class="note">None</span>` : null}
+      </div></div>
       <div><span class="lbl">Deadline${!canRedate ? ' (ask the assigner to change it)' : ''}${t.slip_count ? `, moved ${t.slip_count}×` : ''}</span><${DeadlineField} value=${t.due_date} disabled=${!canRedate} onChange=${(d) => d !== t.due_date && save({ due_date: d })} /></div>
       <div><span class="lbl">Priority</span><${PrioritySeg} value=${t.priority} disabled=${!can} onChange=${(p) => save({ priority: p })} />${t.notes?.startsWith('Zoho priority') && !t.priority ? html`<p class="note">${t.notes}</p>` : ''}</div>
       <div class="grid2">
@@ -2152,6 +2300,8 @@ function activityText(ctx, a) {
   if (a.action === 'reopened') return `${who} reopened`;
   if (a.action === 'acknowledged') return `${who} acknowledged`;
   if (a.action === 'on_hold') return `${who} put it on hold`;
+  if (a.action === 'collab_added') return `${who} added ${ctx.person(a.details?.person)?.name || 'someone'} as collaborator`;
+  if (a.action === 'collab_removed') return `${who} removed ${ctx.person(a.details?.person)?.name || 'someone'} as collaborator`;
   if (a.action === 'resumed') return `${who} resumed it`;
   if (a.action === 'cancelled') return `${who} cancelled it`;
   return a.action;
