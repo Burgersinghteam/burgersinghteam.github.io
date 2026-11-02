@@ -1034,9 +1034,17 @@ function OwnerSuggest({ ctx, deptIds, close }) {
         const { data, error } = await sb.functions.invoke('ai', { body: { mode: 'suggest_owners', department_id: deptIds[i] } });
         if (error || data?.error) { skipped.push(`${d?.name}: ${data?.error || 'could not get suggestions'}`); if ((data?.error || '').includes('limit')) break; continue; }
         if (data.note) skipped.push(`${d?.name}: ${data.note}`);
-        (data.suggestions || []).forEach((s) => all.push({ ...s, dept: deptIds[i], on: true }));
+        (data.suggestions || []).forEach((s) => all.push({ ...s, dept: deptIds[i], on: true, src: 'ai' }));
       }
-      if (alive) { setItems(all); setNotes(skipped); }
+      // backup: the app's own matching for anything Gemini skipped
+      for (const did of deptIds) {
+        const done = new Set(all.map((x) => x.task_id));
+        ctx.tasks.filter((t) => t.department_id === did && t.owner_id === ctx.me.id && isActive(t) && !t.is_private && !done.has(t.id)).forEach((t) => {
+          const g = suggestOwner(t.title, ctx, did, t.task_list_id);
+          if (g && g.id !== ctx.me.id) all.push({ task_id: t.id, owner_id: g.id, dept: did, on: true, src: 'match', why: g.why });
+        });
+      }
+      if (alive) { setItems(all); setNotes(skipped.filter((n) => !all.some((x) => n.startsWith(ctx.dept(x.dept)?.name + ':')))); }
     })();
     return () => { alive = false; };
   }, []);
@@ -1055,20 +1063,20 @@ function OwnerSuggest({ ctx, deptIds, close }) {
   return html`<div class="scrim" onClick=${close}><div class="sheet wide" role="dialog" aria-modal="true" aria-label="Suggested owners" onClick=${(e) => e.stopPropagation()}>
     <div class="top"><b style="font-size:16px;font-weight:600;display:flex;gap:8px;align-items:center">${I.spark} Suggested owners</b><button class="btn ghost" onClick=${close}>Close</button></div>
     ${items === null ? html`<p class="note">Reading ${prog.name}… department ${prog.i} of ${deptIds.length}. This takes a few seconds per department.</p>` : html`
-      <p class="note">Gemini suggested an owner for ${items.length} of your tasks, based on each department's team and who already owns similar work. Tasks it thought should stay with you are not listed. Untick or change anything; nothing moves until you apply.</p>
+      <p class="note">${items.length} of your tasks have a suggested owner: ${items.filter((x) => x.src === 'ai').length} from Gemini, ${items.filter((x) => x.src === 'match').length} from list owners, roles and department heads (hover the ✦). Tasks that should stay with you are not listed. Untick or change anything; nothing moves until you apply.</p>
       ${on.length ? html`<p class="note">Split: ${[...new Set(on.map((x) => x.owner_id))].map((pid) => `${first(ctx.person(pid)?.name)} ${count(pid)}`).join(', ')}</p>` : ''}
       ${notes.length ? html`<p class="note">Skipped: ${notes.join('; ')}</p>` : ''}
       ${groups.map((g) => html`<div>
         <div style="display:flex;align-items:center;gap:8px;margin:10px 0 4px;font-weight:600"><span class="ddot" style=${'background:' + ctx.deptColor(g.d)}></span>${ctx.dept(g.d)?.name}<span class="muted" style="font-weight:400">${g.rows.length}</span></div>
         ${g.rows.map((x) => { const t = ctx.tasks.find((y) => y.id === x.task_id); return t ? html`<div class="suggrow">
           <input type="checkbox" class="cbox" style="opacity:1" checked=${x.on} aria-label=${'Apply for ' + t.title} onChange=${() => setItems(items.map((y, j) => (j === x.n ? { ...y, on: !y.on } : y)))} />
-          <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title=${t.title}>${t.title}${t.task_list_id ? html` <span class="tag" style="margin-left:6px">${ctx.list(t.task_list_id)?.name}</span>` : ''}</span>
+          <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title=${t.title}>${x.src === 'match' ? html`<span title=${x.why} style="color:var(--link);margin-right:4px">✦</span>` : ''}${t.title}${t.task_list_id ? html` <span class="tag" style="margin-left:6px">${ctx.list(t.task_list_id)?.name}</span>` : ''}</span>
           <select class="field" aria-label="Owner" value=${x.owner_id} onChange=${(e) => setItems(items.map((y, j) => (j === x.n ? { ...y, owner_id: e.target.value } : y)))}>
             ${[...teamOf(g.d), ctx.me].filter((p, i, arr) => arr.findIndex((q) => q.id === p.id) === i).map((p) => html`<option value=${p.id} selected=${p.id === x.owner_id}>${p.id === ctx.me.id ? 'Keep with me' : p.name}</option>`)}
           </select>
         </div>` : ''; })}
       </div>`)}
-      ${!items.length ? html`<p class="empty" style="padding:8px 0">No suggestions. Departments without team members can't be assigned automatically.</p>` : ''}
+      ${!items.length ? html`<p class="empty" style="padding:8px 0">No suggestions yet. Add what each person handles in Admin → People, or set default owners for lists, and try again.</p>` : ''}
       <div class="actions"><button class="btn primary big" disabled=${busy || !on.length} onClick=${apply}>${busy ? 'Assigning…' : `Assign ${on.length} tasks`}</button><button class="btn ghost big" onClick=${close}>Cancel</button></div>`}
   </div></div>`;
 }
