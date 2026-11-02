@@ -459,3 +459,5 @@ ul.brief.q li::marker { content: '? '; color: var(--faint); }
 .logrow .when { width: 110px; flex-shrink: 0; font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; }
 .logrow .what { flex: 1; min-width: 0; }
 @media (max-width: 760px) { .logrow { padding: 8px 16px; flex-wrap: wrap; } }
+
+.plists { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }

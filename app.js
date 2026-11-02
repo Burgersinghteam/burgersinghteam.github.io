@@ -464,8 +464,12 @@ function ListMenu({ ctx, l }) {
     <button class="iconbtn" aria-label=${'Options for ' + l.name} onClick=${(e) => { e.preventDefault(); setOpen(!open); setMoving(false); }}>⋯</button>
     ${open ? html`<div class="pop" style="right:0;left:auto;min-width:230px">${!moving ? html`
       <button class="opt" onClick=${() => { setOpen(false); ctx.renameList(l); }}>Rename</button>
+      <button class="opt" onClick=${() => setMoving('owner')}>Default owner<span class="r">${l.default_owner_id ? first(ctx.person(l.default_owner_id)?.name) : 'None'} ›</span></button>
       ${targets.length ? html`<button class="opt" onClick=${() => setMoving(true)}>Move to another department<span class="r">›</span></button>` : ''}
       <button class="opt" style="color:var(--late)" onClick=${() => { setOpen(false); ctx.deleteList(l); }}>Delete list</button>`
+    : moving === 'owner' ? html`<span class="note" style="padding:4px 8px">New tasks in “${l.name}” go to:</span>
+      <div class="opts">${ctx.people.filter((p) => ctx.members.some((m) => m.person_id === p.id && m.department_id === l.department_id)).map((p) => html`<button class="opt" aria-selected=${l.default_owner_id === p.id} onClick=${async () => { setOpen(false); const { error } = await sb.from('task_lists').update({ default_owner_id: p.id }).eq('id', l.id); ctx.setToast({ text: error ? error.message : `${first(p.name)} is default for ${l.name}` }); ctx.load(); }}><${Avatar} ctx=${ctx} id=${p.id} size=${20} />${p.name}</button>`)}
+        ${l.default_owner_id ? html`<button class="opt" onClick=${async () => { setOpen(false); await sb.from('task_lists').update({ default_owner_id: null }).eq('id', l.id); ctx.setToast({ text: 'Default owner removed' }); ctx.load(); }}>No default owner</button>` : null}</div>`
     : html`<span class="note" style="padding:4px 8px">Move “${l.name}” and its tasks to:</span>
       <div class="opts">${targets.map((x) => html`<button class="opt" onClick=${() => { setOpen(false); ctx.moveList(l, x.id); }}><span class="ddot" style=${'background:' + ctx.deptColor(x.id)}></span>${x.name}</button>`)}</div>`}
     </div>` : ''}
@@ -1538,15 +1542,17 @@ function Composer({ ctx, deptHint, listHint }) {
 
   const parsed = useMemo(() => parseTaskText(text, ctx), [text, ctx.people, ctx.lists, ctx.depts]);
   const pick = (k) => ov[k] ?? sticky?.[k] ?? parsed[k] ?? (ai && ai.text === text ? ai[k] : null);
-  const explicitOwner = pick('owner_id');
-  const guessDept = ov.department_id || sticky?.department_id || parsed.department_id || deptHint || null;
-  const ownerGuess = useMemo(() => (!explicitOwner && parsed.title && parsed.title.split(' ').length >= 2 ? suggestOwner(parsed.title, ctx, guessDept) : null), [explicitOwner, parsed.title, guessDept, ctx.tasks.length, ctx.people]);
-  const owner_id = explicitOwner || ownerGuess || ctx.me.id;
-  const ownerGuessed = !explicitOwner && !!ownerGuess;
   const priority = pick('priority') || 'P2';
   const due_date = pick('due_date');
-  const baseDept = ov.department_id || sticky?.department_id || parsed.department_id || ctxDefault.department_id || null;
-  const guess = useMemo(() => (parsed.title && parsed.title.split(' ').length >= 2 ? suggestList(parsed.title, ctx, baseDept, ov.owner_id || parsed.owner_id) : null), [parsed.title, baseDept, ov.owner_id, parsed.owner_id, ctx.tasks.length]);
+  const explicitOwner = pick('owner_id');
+  const baseDept = ov.department_id || sticky?.department_id || parsed.department_id || ctxDefault.department_id || (explicitOwner ? null : null);
+  const guess = useMemo(() => (parsed.title && parsed.title.split(' ').length >= 2 ? suggestList(parsed.title, ctx, baseDept, explicitOwner) : null), [parsed.title, baseDept, explicitOwner, ctx.tasks.length]);
+  const ownerDeptHint = baseDept || (ov.task_list_id && ctx.list(ov.task_list_id)?.department_id) || guess?.department_id || null;
+  const listForOwner = (ov.task_list_id !== undefined ? ov.task_list_id : null) || sticky?.task_list_id || parsed.task_list_id || ctxDefault.task_list_id || guess?.task_list_id || null;
+  const ownerGuessObj = useMemo(() => (!explicitOwner && (listForOwner || (parsed.title && parsed.title.split(' ').length >= 2)) ? suggestOwner(parsed.title || '', ctx, ownerDeptHint, listForOwner) : null), [explicitOwner, parsed.title, ownerDeptHint, listForOwner, ctx.tasks.length, ctx.people, ctx.lists]);
+  const ownerGuess = ownerGuessObj?.id || null;
+  const owner_id = explicitOwner || ownerGuess || ctx.me.id;
+  const ownerGuessed = !explicitOwner && !!ownerGuess;
   const list_id = ov.task_list_id !== undefined ? ov.task_list_id : (sticky?.task_list_id ?? parsed.task_list_id ?? (ai && ai.text === text ? ai.task_list_id : null) ?? ctxDefault.task_list_id ?? guess?.task_list_id ?? null);
   const listGuessed = ov.task_list_id === undefined && !sticky?.task_list_id && !parsed.task_list_id && !ctxDefault.task_list_id && guess && list_id === guess.task_list_id;
   const dept_id = ov.department_id || (list_id && ctx.list(list_id)?.department_id) || sticky?.department_id || parsed.department_id || (ai && ai.text === text ? ai.department_id : null) || ctxDefault.department_id || ctx.ownerDept(owner_id) || ctx.myDepts[0] || ctx.depts[0]?.id;
@@ -1557,7 +1563,7 @@ function Composer({ ctx, deptHint, listHint }) {
   useEffect(() => {
     clearTimeout(aiTimer.current);
     const words = text.trim().split(/\s+/).length;
-    if (words < 5 || (parsed.owner_id || ov.owner_id) && (parsed.due_date || ov.due_date)) return;
+    if (words < 4 || (parsed.owner_id || ov.owner_id) && (parsed.due_date || ov.due_date)) return;
     aiTimer.current = setTimeout(async () => {
       setAiBusy(true);
       try {
@@ -1635,7 +1641,7 @@ function Composer({ ctx, deptHint, listHint }) {
         ${pop === 'place' ? html`<${PlacePicker} ctx=${ctx} onPick=${(d, l) => setO({ department_id: d, task_list_id: l })} />` : null}
       </div>` : null}
       ${show ? html`<div class="cchips" aria-label="Task details">
-        <button class=${'cchip' + (ov.owner_id || parsed.owner_id || ownerGuessed ? ' set' : '') + (fromAi('owner_id') || ownerGuessed ? ' ai' : '')} onClick=${() => setPop(pop === 'owner' ? null : 'owner')} title=${ownerGuessed ? 'Suggested from what each person handles. Click to change.' : 'Owner (type @name)'}>${ownerGuessed ? I.spark : null}<${Avatar} ctx=${ctx} id=${owner_id} size=${18} />${owner_id === ctx.me.id ? 'Me' : first(onP?.name)}</button>
+        <button class=${'cchip' + (ov.owner_id || parsed.owner_id || ownerGuessed ? ' set' : '') + (fromAi('owner_id') || ownerGuessed ? ' ai' : '')} onClick=${() => setPop(pop === 'owner' ? null : 'owner')} title=${ownerGuessed ? `Suggested: ${ownerGuessObj.why}. Click to change.` : 'Owner (type @name)'}>${ownerGuessed ? I.spark : null}<${Avatar} ctx=${ctx} id=${owner_id} size=${18} />${owner_id === ctx.me.id ? 'Me' : first(onP?.name)}</button>
         <button class=${'cchip' + (due_date ? ' set' : ' need') + (fromAi('due_date') ? ' ai' : '')} onClick=${() => setPop(pop === 'date' ? null : 'date')} title="Due date (type fri, tomorrow, 12 nov)">${I.cal}${due_date ? fmtDate(due_date) : 'Add date'}</button>
         <button class=${'cchip prio-' + priority + (ov.priority || parsed.priority ? ' set' : '')} onClick=${() => setPop(pop === 'prio' ? null : 'prio')} title="Priority (type !1, !2, !3 or urgent)">${PRI[priority]}</button>
         <button class=${'cchip' + (ov.department_id || ov.task_list_id || parsed.department_id || list_id ? ' set' : '') + (fromAi('department_id') || listGuessed ? ' ai' : '')} onClick=${() => setPop(pop === 'place' ? null : 'place')} title=${listGuessed ? 'List suggested from where similar tasks sit. Click to change.' : 'Department or list (type #name)'}>${listGuessed ? I.spark : null}<span class="ddot" style=${'background:' + ctx.deptColor(dept_id)}></span>${placeLabel}</button>
@@ -1667,22 +1673,46 @@ function PlacePicker({ ctx, onPick }) {
     </div>`)}</div>`;
 }
 /* ---------- auto owner: who handles this kind of work ---------- */
-function suggestOwner(title, ctx, deptId) {
-  const tt = tokens(title);
-  if (!tt.length) return null;
+// 1) best match on role description, department lists and past tasks; 2) the only person in that department; 3) the department head
+const STOP_LITE = new Set('a an the and or of for to in on at by with from into about this that these those is are be been was were will shall should must need needs do done get make all our my your his her their its it as per via vs on time'.split(' '));
+const otokens = (s) => [...new Set((s || '').toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2 && !STOP_LITE.has(w)).map(stem).filter((w) => w.length > 2))];
+function listOwner(ctx, listId) {
+  const l = ctx.list(listId);
+  if (!l) return null;
+  if (l.default_owner_id && ctx.people.some((p) => p.id === l.default_owner_id)) return { id: l.default_owner_id, why: `Default owner of ${l.name}` };
+  const counts = {};
+  ctx.tasks.filter((t) => t.task_list_id === listId && !isClosed(t)).forEach((t) => { const p = ctx.person(t.owner_id); if (p && p.role !== 'admin' && p.active !== false) counts[t.owner_id] = (counts[t.owner_id] || 0) + 1; });
+  const r = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+  const total = r.reduce((x, [, n]) => x + n, 0);
+  if (r.length && r[0][1] >= 2 && r[0][1] / total >= 0.5) return { id: r[0][0], why: `Handles most of ${l.name}` };
+  return null;
+}
+function suggestOwner(title, ctx, deptId, listId) {
+  if (listId) { const lo = listOwner(ctx, listId); if (lo) return lo; deptId = deptId || ctx.list(listId)?.department_id; }
+  const tt = otokens(title);
   const memberIds = deptId ? ctx.members.filter((m) => m.department_id === deptId).map((m) => m.person_id) : null;
-  const cands = ctx.people.filter((p) => p.active !== false && p.role !== 'admin' && (!memberIds || memberIds.includes(p.id)));
-  const scores = cands.map((p) => {
-    const ht = tokens(p.handles || '');
-    let s = ht.filter((w) => tt.includes(w)).length * 3;
-    const owned = ctx.tasks.filter((t) => t.owner_id === p.id && (!deptId || t.department_id === deptId)).slice(0, 300);
-    const hits = owned.map((t) => tokens(t.title).filter((w) => tt.includes(w)).length).filter(Boolean).sort((a, b) => b - a).slice(0, 3);
-    s += hits.reduce((x, y) => x + y, 0);
-    return [p.id, s];
-  }).filter(([, s]) => s > 0).sort((a, b) => b[1] - a[1]);
-  if (!scores.length || scores[0][1] < 3) return null;
-  if (scores[1] && scores[1][1] >= scores[0][1] * 0.8) return null;
-  return scores[0][0];
+  const cands = ctx.people.filter((p) => p.role !== 'admin' && (!memberIds || memberIds.includes(p.id)));
+  if (tt.length) {
+    const scores = cands.map((p) => {
+      const role = otokens(`${p.handles || ''} ${ctx.members.filter((m) => m.person_id === p.id).map((m) => ctx.dept(m.department_id)?.name).join(' ')}`);
+      let s = role.filter((w) => tt.includes(w)).length * 3;
+      const owned = ctx.tasks.filter((t) => t.owner_id === p.id && (!deptId || t.department_id === deptId)).slice(0, 300);
+      s += owned.map((t) => otokens(`${t.title} ${ctx.list(t.task_list_id)?.name || ''}`).filter((w) => tt.includes(w)).length).filter(Boolean).sort((a, b) => b - a).slice(0, 3).reduce((x, y) => x + y, 0);
+      return [p.id, s];
+    }).filter(([, s]) => s > 0).sort((a, b) => b[1] - a[1]);
+    if (scores.length && scores[0][1] >= 2) {
+      if (!scores[1] || scores[1][1] < scores[0][1] * 0.75) return { id: scores[0][0], why: 'Matches what they handle' };
+      const close = scores.filter(([, v]) => v >= scores[0][1] * 0.75).map(([id]) => id);
+      const isHead = (id) => ctx.members.some((m) => m.person_id === id && m.is_head && (!deptId || m.department_id === deptId));
+      const specialists = close.filter((id) => !isHead(id));
+      if (specialists.length === 1) return { id: specialists[0], why: 'Matches what they handle' };
+    }
+  }
+  if (!deptId) return null;
+  if (cands.length === 1) return { id: cands[0].id, why: `Only person in ${ctx.dept(deptId)?.name}` };
+  const heads = ctx.members.filter((m) => m.department_id === deptId && m.is_head).map((m) => m.person_id).filter((id) => cands.some((c) => c.id === id));
+  if (heads.length === 1) return { id: heads[0], why: `Head of ${ctx.dept(deptId)?.name}` };
+  return null;
 }
 
 /* ---------- People and access (admin) ---------- */
@@ -1709,6 +1739,7 @@ function PeopleTab({ ctx }) {
   const setPerson = (p, fields, label) => run(sb.from('people').update(fields).eq('id', p.id), label);
   const addDept = (p, d) => run(sb.from('department_members').insert({ person_id: p.id, department_id: d, is_head: false }), `Added to ${ctx.dept(d)?.name}`);
   const removeDept = (p, d) => run(sb.from('department_members').delete().eq('person_id', p.id).eq('department_id', d), `Removed from ${ctx.dept(d)?.name}`);
+  const setList = (l, pid) => run(sb.from('task_lists').update({ default_owner_id: pid }).eq('id', l.id), pid ? `${first(ctx.person(pid)?.name)} is now default for ${l.name}` : `${l.name} has no default owner`);
   const toggleHead = (p, m) => run(sb.from('department_members').update({ is_head: !m.is_head }).eq('person_id', p.id).eq('department_id', m.department_id), m.is_head ? 'No longer head' : `Now head of ${ctx.dept(m.department_id)?.name}`);
   const onCount = ctx.people.filter((p) => p.onboarded || p.role === 'admin').length;
   return html`
@@ -1721,10 +1752,10 @@ function PeopleTab({ ctx }) {
     <div class="page">
       <p class="note pad" style="padding-top:10px">What each person handles is used to suggest owners automatically: when you add a task, in Suggest owners, and in meeting notes. Write it the way you'd describe their job, for example “Bulk orders, corporate orders, alternate revenue”.</p>
       ${adding ? html`<${AddPerson} ctx=${ctx} close=${() => setAdding(false)} />` : null}
-      <div class="plist">${people.map((p) => html`<${PersonRow} key=${p.id} ctx=${ctx} p=${p} memberOf=${memberOf(p.id)} setPerson=${setPerson} addDept=${addDept} removeDept=${removeDept} toggleHead=${toggleHead} busy=${busy} />`)}</div>
+      <div class="plist">${people.map((p) => html`<${PersonRow} key=${p.id} ctx=${ctx} p=${p} memberOf=${memberOf(p.id)} setPerson=${setPerson} addDept=${addDept} removeDept=${removeDept} toggleHead=${toggleHead} busy=${busy} setList=${setList} />`)}</div>
     </div>`;
 }
-function PersonRow({ ctx, p, memberOf, setPerson, addDept, removeDept, toggleHead, busy }) {
+function PersonRow({ ctx, p, memberOf, setPerson, addDept, removeDept, toggleHead, busy, setList }) {
   const [handles, setHandles] = useState(p.handles || '');
   useEffect(() => setHandles(p.handles || ''), [p.handles]);
   const open = ctx.tasks.filter((t) => t.owner_id === p.id && isActive(t)).length;
@@ -1737,7 +1768,11 @@ function PersonRow({ ctx, p, memberOf, setPerson, addDept, removeDept, toggleHea
         <button aria-label=${'Remove from ' + ctx.dept(m.department_id)?.name} disabled=${busy} onClick=${() => confirm(`Remove ${first(p.name)} from ${ctx.dept(m.department_id)?.name}? Their tasks stay where they are.`) && removeDept(p, m.department_id)}>×</button></span>`)}
       ${avail.length ? html`<select class="adddept" aria-label=${'Add ' + p.name + ' to a department'} value="" onChange=${(e) => { if (e.target.value) addDept(p, e.target.value); e.target.value = ''; }}><option value="">+ Department</option>${avail.map((d) => html`<option value=${d.id}>${d.name}</option>`)}</select>` : null}
     </div>
-    <div class="phandles"><label class="sr" for=${'h' + p.id}>What ${p.name} handles</label>
+    <div class="phandles">
+      <div class="plists">${ctx.lists.filter((l) => l.default_owner_id === p.id).map((l) => html`<span class="dchip"><${LIcon} name=${l.name} sm />${l.name}<button aria-label=${'Stop defaulting ' + l.name + ' to ' + p.name} disabled=${busy} onClick=${() => setList(l, null)}>×</button></span>`)}
+        ${(() => { const mine = memberOf.map((m) => m.department_id); const opts = ctx.lists.filter((l) => mine.includes(l.department_id) && l.default_owner_id !== p.id); return opts.length ? html`<select class="adddept" aria-label=${'Make ' + p.name + ' the default owner of a list'} value="" onChange=${(e) => { const l = ctx.list(e.target.value); if (l) setList(l, p.id); e.target.value = ''; }}><option value="">+ Default for list</option>${opts.map((l) => html`<option value=${l.id}>${ctx.dept(l.department_id)?.name} / ${l.name}${l.default_owner_id ? ` (now ${first(ctx.person(l.default_owner_id)?.name)})` : ''}</option>`)}</select>` : null; })()}
+      </div>
+      <label class="sr" for=${'h' + p.id}>What ${p.name} handles</label>
       <textarea id=${'h' + p.id} class="field" rows="2" placeholder="What they handle, e.g. Bulk orders, corporate orders, alternate revenue" value=${handles} onInput=${(e) => setHandles(e.target.value)} onBlur=${() => handles !== (p.handles || '') && setPerson(p, { handles: handles.trim() || null }, 'Saved')}></textarea></div>
     <div class="pflags">
       <label title="Gets the 10am email and nudges"><input type="checkbox" checked=${!!p.onboarded || p.role === 'admin'} disabled=${busy || p.role === 'admin'} onChange=${() => setPerson(p, { onboarded: !p.onboarded }, p.onboarded ? `${first(p.name)} switched off` : `${first(p.name)} is on the app`)} /> On the app</label>
@@ -1880,6 +1915,7 @@ function auditLine(ctx, x) {
   if (x.entity === 'departments') return x.action === 'insert' ? `${who} added department ${n.name}` : x.action === 'update' && n.name !== o.name ? `${who} renamed department ${o.name} to ${n.name}` : null;
   if (x.entity === 'task_lists') {
     if (x.action === 'insert') return `${who} created list ${n.name} in ${dn(n.department_id)}`;
+    if (x.action === 'update' && n.default_owner_id !== o.default_owner_id) return n.default_owner_id ? `${who} made ${pn(n.default_owner_id)} default owner of ${n.name}` : `${who} removed the default owner of ${n.name}`;
     if (x.action === 'delete') return `${who} deleted list ${o.name}`;
     if (n.name !== o.name) return `${who} renamed list ${o.name} to ${n.name}`;
     if (n.department_id !== o.department_id) return `${who} moved list ${n.name} to ${dn(n.department_id)}`;
