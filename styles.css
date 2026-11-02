@@ -430,3 +430,32 @@ ul.brief.q li::marker { content: '? '; color: var(--faint); }
   @keyframes micpulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(255, 214, 0, .55); } 50% { box-shadow: 0 0 0 6px rgba(255, 214, 0, 0); } }
 }
 .ckeys.listen { color: var(--ink2); }
+
+/* people admin */
+.plist { display: flex; flex-direction: column; }
+.prow { display: grid; grid-template-columns: minmax(200px, 1.1fr) minmax(220px, 1.3fr) minmax(220px, 1.4fr) 130px; gap: 16px; align-items: start; padding: 14px 28px; border-bottom: 1px solid var(--line2); }
+.prow.inactive { opacity: .55; }
+.pwho { display: flex; gap: 10px; align-items: flex-start; }
+.pwho b { font-weight: 600; }
+.pdepts { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.dchip { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 4px 0 9px; border-radius: 7px; background: var(--chip); font-size: 12.5px; }
+.dchip.head { background: var(--brand-soft); }
+.dchip button { border: none; background: none; color: var(--muted); font-size: 12px; padding: 2px 4px; border-radius: 5px; }
+.dchip button:hover { background: var(--surface); color: var(--ink); }
+.adddept { height: 28px; border: 1px dashed var(--line); border-radius: 7px; background: transparent; color: var(--muted); font-size: 12.5px; padding: 0 6px; }
+.phandles textarea { width: 100%; min-height: 54px; font-size: 13px; }
+.pflags { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.pflags input, .addperson input[type=checkbox] { accent-color: var(--ink); margin-right: 4px; }
+.addperson { margin: 10px 28px 16px; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); display: flex; flex-direction: column; gap: 12px; max-width: 760px; }
+.addperson .field { width: 100%; }
+.dlist { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; max-width: 760px; }
+.drow { display: flex; align-items: center; gap: 10px; padding: 8px 14px; border-top: 1px solid var(--line2); font-size: 13.5px; }
+.drow:first-child { border-top: none; }
+.drow b { font-weight: 500; }
+@media (max-width: 900px) { .prow { grid-template-columns: 1fr; gap: 10px; padding: 14px 16px; } .addperson { margin: 10px 16px; } }
+
+.log { display: flex; flex-direction: column; }
+.logrow { display: flex; align-items: center; gap: 10px; padding: 8px 28px; border-bottom: 1px solid var(--line2); font-size: 13.5px; }
+.logrow .when { width: 110px; flex-shrink: 0; font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.logrow .what { flex: 1; min-width: 0; }
+@media (max-width: 760px) { .logrow { padding: 8px 16px; flex-wrap: wrap; } }

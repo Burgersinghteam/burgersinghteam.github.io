@@ -214,7 +214,7 @@ function App() {
     try {
       const since = new Date(Date.now() - 14 * 86400e3).toISOString();
       const [p, d, m, l, t, done, dcr] = await Promise.all([
-        sb.from('people').select('*').eq('active', true).order('name'),
+        sb.from('people').select('*').order('name'),
         sb.from('departments').select('*').eq('active', true).order('sort_order'),
         sb.from('department_members').select('*'),
         sb.from('task_lists').select('*').eq('active', true).order('name'),
@@ -263,6 +263,7 @@ function App() {
         ${view === 'mine' || (view === 'overview' && !isAdmin) ? html`<${Mine} ctx=${ctx} />` : ''}
         ${view === 'dept' ? html`<${Dept} ctx=${ctx} route=${route} />` : ''}
         ${view === 'all' ? html`<${AllTasks} ctx=${ctx} route=${route} />` : ''}
+        ${view === 'people' ? html`<${PeopleAdmin} ctx=${ctx} route=${route} />` : ''}
       </div>
       <nav class="mtabs" aria-label="Main">
         ${[isAdmin && ['overview', 'Overview'], ['mine', 'Mine'], ['dept', 'Teams'], ['all', 'All']].filter(Boolean).map(([id, l]) => html`<a class="mtab" href=${'#' + id} aria-current=${view === id ? 'page' : null}>${I[id === 'dept' ? 'dept' : id]}${l}</a>`)}
@@ -277,8 +278,10 @@ function App() {
 }
 
 function makeCtx({ me, data, setData, load, setSheet, setToast, setPalette, pins, setPins, setHint }) {
-  const { people, depts, members, lists, tasks, dcr } = data;
-  const person = (id) => people.find((p) => p.id === id);
+  const { depts, members, lists, tasks, dcr } = data;
+  const allPeople = data.people;
+  const people = allPeople.filter((p) => p.active !== false);
+  const person = (id) => allPeople.find((p) => p.id === id);
   const dept = (id) => depts.find((d) => d.id === id);
   const list = (id) => lists.find((l) => l.id === id);
   const deptColor = (id) => DCOL[(dept(id)?.sort_order ?? 1) - 1] || '#A0A4AB';
@@ -399,7 +402,7 @@ function makeCtx({ me, data, setData, load, setSheet, setToast, setPalette, pins
   const addPin = (name, query) => { const p = [...pins.filter((x) => x.name !== name), { name, query }]; setPins(p); savePins(p); };
   const removePin = (name) => { const p = pins.filter((x) => x.name !== name); setPins(p); savePins(p); };
 
-  return { me, data, people, depts, members, lists, tasks, dcr, person, dept, list, deptColor, isAdmin, myDepts, headDepts, isHead, canSeeStats, canDecide, canRedate, canEdit, canOwner, canManageLists,
+  return { me, data, people, allPeople, depts, members, lists, tasks, dcr, person, dept, list, deptColor, isAdmin, myDepts, headDepts, isHead, canSeeStats, canDecide, canRedate, canEdit, canOwner, canManageLists,
     open, mine, ownerDept, update, save, done, reopen, hold, cancel, needsYou, decideDate, approveOther, decideRequest, nudge, readUpdate, createList, moveList, renameList, deleteList, moveTo, load, setToast, setSheet, setPalette,
     openTask: (t) => setSheet({ mode: 'edit', id: t.id }),
     newTask: (p = {}) => { const ov = {}; if (p.department_id) ov.department_id = p.department_id; if (p.task_list_id) ov.task_list_id = p.task_list_id; if (p.owner_id) ov.owner_id = p.owner_id; document.dispatchEvent(new CustomEvent('bs-compose', { detail: { ov } })); }, pins, addPin, removePin };
@@ -477,11 +480,12 @@ function Sidebar({ ctx, view, route }) {
     isAdmin && ['overview', 'Overview', ctx.needsYou().length],
     ['mine', 'My tasks', ctx.mine().filter(isActive).length],
     (isAdmin || ctx.headDepts.length) && ['all', 'All tasks', ctx.open().filter(isActive).length],
+    isAdmin && ['people', 'Admin', ctx.people.length],
   ].filter(Boolean);
   return html`<nav class="side" aria-label="Main">
     <div class="brand"><span class="logo">${I.check}</span>BS Tasks</div>
     <button class="searchbtn" onClick=${() => ctx.setPalette(true)}>${I.search}Search or jump to<kbd>⌘K</kbd></button>
-    ${nav.map(([id, l, n]) => html`<a class="nl" href=${'#' + id} aria-current=${view === id && !route.pin ? 'page' : null}><span class="ic">${I[id]}</span>${l}<span class="c">${n}</span></a>`)}
+    ${nav.map(([id, l, n]) => html`<a class="nl" href=${'#' + id} aria-current=${view === id && !route.pin ? 'page' : null}><span class="ic">${I[id] || I.dept}</span>${l}<span class="c">${n}</span></a>`)}
     ${ctx.pins.length ? html`<div class="sidelabel">Pinned</div>${ctx.pins.map((p) => html`<a class="nl" href=${'#all?pin=' + encodeURIComponent(p.name) + '&q=' + encodeURIComponent(p.query)} aria-current=${route.pin === p.name ? 'page' : null}><span class="ic">${I.pin}</span>${p.name}<span class="c">${ctx.tasks.filter((t) => matchQuery(t, parseQuery(p.query, ctx), ctx)).length}</span></a>`)}` : ''}
     <div class="sidelabel">${isAdmin ? 'Departments' : 'My departments'}
       <span class="sidetools"><button class="linkbtn" onClick=${() => setOpenMapP(Object.fromEntries(myDepts.map((d) => [d.id, true])))}>Expand</button><button class="linkbtn" onClick=${() => setOpenMapP({})}>Collapse</button></span></div>
@@ -523,6 +527,7 @@ function Palette({ ctx, close }) {
       out.push({ k: 'Try', label: 'franchise sales due this week', run: () => setQ('franchise sales due this week') });
       out.push({ k: 'Try', label: 'no update offline revenue', run: () => setQ('no update offline revenue') });
       ctx.depts.slice(0, 6).forEach((d) => out.push({ k: 'Go to', label: d.name, run: () => { location.hash = 'dept?dept=' + d.id; } }));
+      if (ctx.isAdmin) { out.push({ k: 'Go to', label: 'Admin: People', run: () => { location.hash = 'people'; } }); out.push({ k: 'Go to', label: 'Admin: Activity log', run: () => { location.hash = 'people?tab=log'; } }); }
     }
     return out;
   }, [q]);
@@ -1533,7 +1538,11 @@ function Composer({ ctx, deptHint, listHint }) {
 
   const parsed = useMemo(() => parseTaskText(text, ctx), [text, ctx.people, ctx.lists, ctx.depts]);
   const pick = (k) => ov[k] ?? sticky?.[k] ?? parsed[k] ?? (ai && ai.text === text ? ai[k] : null);
-  const owner_id = pick('owner_id') || ctx.me.id;
+  const explicitOwner = pick('owner_id');
+  const guessDept = ov.department_id || sticky?.department_id || parsed.department_id || deptHint || null;
+  const ownerGuess = useMemo(() => (!explicitOwner && parsed.title && parsed.title.split(' ').length >= 2 ? suggestOwner(parsed.title, ctx, guessDept) : null), [explicitOwner, parsed.title, guessDept, ctx.tasks.length, ctx.people]);
+  const owner_id = explicitOwner || ownerGuess || ctx.me.id;
+  const ownerGuessed = !explicitOwner && !!ownerGuess;
   const priority = pick('priority') || 'P2';
   const due_date = pick('due_date');
   const baseDept = ov.department_id || sticky?.department_id || parsed.department_id || ctxDefault.department_id || null;
@@ -1591,7 +1600,7 @@ function Composer({ ctx, deptHint, listHint }) {
     ctx.setToast({ text: `Added: ${row.title} → ${row.owner_id === ctx.me.id ? 'you' : first(ctx.person(row.owner_id)?.name)}, ${shortDue(row.due_date)}`,
       action: { label: 'Edit', fn: () => ctx.setSheet({ mode: 'edit', id: saved.id }) },
       undo: async () => { await sb.from('tasks').delete().eq('id', saved.id); ctx.load(); } });
-    setSticky(keep ? { owner_id: ov.owner_id || parsed.owner_id || null, task_list_id: list_id, department_id: dept_id } : null);
+    setSticky(keep ? { owner_id: ov.owner_id || parsed.owner_id || ownerGuess || null, task_list_id: list_id, department_id: dept_id } : null);
     setText(''); setOv({}); setAi(null); setPop(null); setAc(null);
     ctx.load();
     setTimeout(() => inRef.current?.focus(), 0);
@@ -1626,7 +1635,7 @@ function Composer({ ctx, deptHint, listHint }) {
         ${pop === 'place' ? html`<${PlacePicker} ctx=${ctx} onPick=${(d, l) => setO({ department_id: d, task_list_id: l })} />` : null}
       </div>` : null}
       ${show ? html`<div class="cchips" aria-label="Task details">
-        <button class=${'cchip' + (ov.owner_id || parsed.owner_id ? ' set' : '') + (fromAi('owner_id') ? ' ai' : '')} onClick=${() => setPop(pop === 'owner' ? null : 'owner')} title="Owner (type @name)"><${Avatar} ctx=${ctx} id=${owner_id} size=${18} />${owner_id === ctx.me.id ? 'Me' : first(onP?.name)}</button>
+        <button class=${'cchip' + (ov.owner_id || parsed.owner_id || ownerGuessed ? ' set' : '') + (fromAi('owner_id') || ownerGuessed ? ' ai' : '')} onClick=${() => setPop(pop === 'owner' ? null : 'owner')} title=${ownerGuessed ? 'Suggested from what each person handles. Click to change.' : 'Owner (type @name)'}>${ownerGuessed ? I.spark : null}<${Avatar} ctx=${ctx} id=${owner_id} size=${18} />${owner_id === ctx.me.id ? 'Me' : first(onP?.name)}</button>
         <button class=${'cchip' + (due_date ? ' set' : ' need') + (fromAi('due_date') ? ' ai' : '')} onClick=${() => setPop(pop === 'date' ? null : 'date')} title="Due date (type fri, tomorrow, 12 nov)">${I.cal}${due_date ? fmtDate(due_date) : 'Add date'}</button>
         <button class=${'cchip prio-' + priority + (ov.priority || parsed.priority ? ' set' : '')} onClick=${() => setPop(pop === 'prio' ? null : 'prio')} title="Priority (type !1, !2, !3 or urgent)">${PRI[priority]}</button>
         <button class=${'cchip' + (ov.department_id || ov.task_list_id || parsed.department_id || list_id ? ' set' : '') + (fromAi('department_id') || listGuessed ? ' ai' : '')} onClick=${() => setPop(pop === 'place' ? null : 'place')} title=${listGuessed ? 'List suggested from where similar tasks sit. Click to change.' : 'Department or list (type #name)'}>${listGuessed ? I.spark : null}<span class="ddot" style=${'background:' + ctx.deptColor(dept_id)}></span>${placeLabel}</button>
@@ -1656,6 +1665,228 @@ function PlacePicker({ ctx, onPick }) {
       <button class="opt" style="font-weight:600" onClick=${() => onPick(d.id, null)}><span class="ddot" style=${'background:' + ctx.deptColor(d.id)}></span>${d.name}</button>
       ${ctx.lists.filter((l) => l.department_id === d.id && (!s || l.name.toLowerCase().includes(s) || d.name.toLowerCase().includes(s))).map((l) => html`<button class="opt" style="padding-left:26px" onClick=${() => onPick(d.id, l.id)}><${LIcon} name=${l.name} sm />${l.name}</button>`)}
     </div>`)}</div>`;
+}
+/* ---------- auto owner: who handles this kind of work ---------- */
+function suggestOwner(title, ctx, deptId) {
+  const tt = tokens(title);
+  if (!tt.length) return null;
+  const memberIds = deptId ? ctx.members.filter((m) => m.department_id === deptId).map((m) => m.person_id) : null;
+  const cands = ctx.people.filter((p) => p.active !== false && p.role !== 'admin' && (!memberIds || memberIds.includes(p.id)));
+  const scores = cands.map((p) => {
+    const ht = tokens(p.handles || '');
+    let s = ht.filter((w) => tt.includes(w)).length * 3;
+    const owned = ctx.tasks.filter((t) => t.owner_id === p.id && (!deptId || t.department_id === deptId)).slice(0, 300);
+    const hits = owned.map((t) => tokens(t.title).filter((w) => tt.includes(w)).length).filter(Boolean).sort((a, b) => b - a).slice(0, 3);
+    s += hits.reduce((x, y) => x + y, 0);
+    return [p.id, s];
+  }).filter(([, s]) => s > 0).sort((a, b) => b[1] - a[1]);
+  if (!scores.length || scores[0][1] < 3) return null;
+  if (scores[1] && scores[1][1] >= scores[0][1] * 0.8) return null;
+  return scores[0][0];
+}
+
+/* ---------- People and access (admin) ---------- */
+function PeopleAdmin({ ctx, route }) {
+  const tab = route?.tab || 'people';
+  const tabs = [['people', 'People'], ['depts', 'Departments'], ['email', 'Email settings'], ['log', 'Activity log']];
+  if (!ctx.isAdmin) return html`<div class="topbar"><h1>Admin</h1></div><p class="empty">Only an admin can open this page.</p>`;
+  return html`
+    <div class="topbar"><h1>Admin</h1>
+      <div class="tabs" role="tablist">${tabs.map(([k, l]) => html`<a role="tab" class="tab" style="text-decoration:none" href=${'#people?tab=' + k} aria-selected=${tab === k}>${l}</a>`)}</div></div>
+    ${tab === 'people' ? html`<${PeopleTab} ctx=${ctx} />` : null}
+    ${tab === 'depts' ? html`<div class="page"><${DeptAdmin} ctx=${ctx} /></div>` : null}
+    ${tab === 'email' ? html`<${EmailSettings} ctx=${ctx} />` : null}
+    ${tab === 'log' ? html`<${ActivityLog} ctx=${ctx} />` : null}`;
+}
+function PeopleTab({ ctx }) {
+  const [q, setQ] = useState('');
+  const [adding, setAdding] = useState(false);
+  const [deptFilter, setDeptFilter] = useState('');
+  const [busy, setBusy] = useState(false);
+  const people = ctx.allPeople.filter((p) => (!q || `${p.name} ${p.email} ${p.handles || ''}`.toLowerCase().includes(q.toLowerCase())) && (!deptFilter || ctx.members.some((m) => m.person_id === p.id && m.department_id === deptFilter)));
+  const memberOf = (pid) => ctx.members.filter((m) => m.person_id === pid);
+  async function run(p, label) { setBusy(true); const r = await p; setBusy(false); if (r?.error) { ctx.setToast({ text: r.error.message }); return false; } if (label) ctx.setToast({ text: label }); ctx.load(); return true; }
+  const setPerson = (p, fields, label) => run(sb.from('people').update(fields).eq('id', p.id), label);
+  const addDept = (p, d) => run(sb.from('department_members').insert({ person_id: p.id, department_id: d, is_head: false }), `Added to ${ctx.dept(d)?.name}`);
+  const removeDept = (p, d) => run(sb.from('department_members').delete().eq('person_id', p.id).eq('department_id', d), `Removed from ${ctx.dept(d)?.name}`);
+  const toggleHead = (p, m) => run(sb.from('department_members').update({ is_head: !m.is_head }).eq('person_id', p.id).eq('department_id', m.department_id), m.is_head ? 'No longer head' : `Now head of ${ctx.dept(m.department_id)?.name}`);
+  const onCount = ctx.people.filter((p) => p.onboarded || p.role === 'admin').length;
+  return html`
+    <div class="filterbar">
+      <span class="note" style="margin-right:6px">${ctx.people.length} people, ${onCount} on the app</span>
+      <button class="btn primary" onClick=${() => setAdding(true)}>${I.plus}Add person</button>
+      <label class="nlsearch">${I.search}<span class="sr">Search people</span><input placeholder="Search name, email or role" value=${q} onInput=${(e) => setQ(e.target.value)} /></label>
+      <label class="ctl">Department <select value=${deptFilter} onChange=${(e) => setDeptFilter(e.target.value)}><option value="">All</option>${ctx.depts.map((d) => html`<option value=${d.id}>${d.name}</option>`)}</select></label>
+    </div>
+    <div class="page">
+      <p class="note pad" style="padding-top:10px">What each person handles is used to suggest owners automatically: when you add a task, in Suggest owners, and in meeting notes. Write it the way you'd describe their job, for example “Bulk orders, corporate orders, alternate revenue”.</p>
+      ${adding ? html`<${AddPerson} ctx=${ctx} close=${() => setAdding(false)} />` : null}
+      <div class="plist">${people.map((p) => html`<${PersonRow} key=${p.id} ctx=${ctx} p=${p} memberOf=${memberOf(p.id)} setPerson=${setPerson} addDept=${addDept} removeDept=${removeDept} toggleHead=${toggleHead} busy=${busy} />`)}</div>
+    </div>`;
+}
+function PersonRow({ ctx, p, memberOf, setPerson, addDept, removeDept, toggleHead, busy }) {
+  const [handles, setHandles] = useState(p.handles || '');
+  useEffect(() => setHandles(p.handles || ''), [p.handles]);
+  const open = ctx.tasks.filter((t) => t.owner_id === p.id && isActive(t)).length;
+  const avail = ctx.depts.filter((d) => !memberOf.some((m) => m.department_id === d.id));
+  return html`<div class=${'prow' + (p.active === false ? ' inactive' : '')}>
+    <div class="pwho"><${Avatar} ctx=${ctx} id=${p.id} size=${32} /><div><b>${p.name}</b>${p.role === 'admin' ? html` <span class="tag">Admin</span>` : null}<div class="note">${p.email}</div><div class="note">${open} open tasks${p.auth_user_id ? '' : ', not signed in yet'}</div></div></div>
+    <div class="pdepts">
+      ${memberOf.map((m) => html`<span class=${'dchip' + (m.is_head ? ' head' : '')}><span class="ddot" style=${'background:' + ctx.deptColor(m.department_id)}></span>${ctx.dept(m.department_id)?.name}
+        <button title=${m.is_head ? 'Head of department. Click to make a member' : 'Member. Click to make head'} aria-label=${(m.is_head ? 'Remove head role in ' : 'Make head of ') + ctx.dept(m.department_id)?.name} disabled=${busy} onClick=${() => toggleHead(p, m)}>${m.is_head ? '★ Head' : '☆'}</button>
+        <button aria-label=${'Remove from ' + ctx.dept(m.department_id)?.name} disabled=${busy} onClick=${() => confirm(`Remove ${first(p.name)} from ${ctx.dept(m.department_id)?.name}? Their tasks stay where they are.`) && removeDept(p, m.department_id)}>×</button></span>`)}
+      ${avail.length ? html`<select class="adddept" aria-label=${'Add ' + p.name + ' to a department'} value="" onChange=${(e) => { if (e.target.value) addDept(p, e.target.value); e.target.value = ''; }}><option value="">+ Department</option>${avail.map((d) => html`<option value=${d.id}>${d.name}</option>`)}</select>` : null}
+    </div>
+    <div class="phandles"><label class="sr" for=${'h' + p.id}>What ${p.name} handles</label>
+      <textarea id=${'h' + p.id} class="field" rows="2" placeholder="What they handle, e.g. Bulk orders, corporate orders, alternate revenue" value=${handles} onInput=${(e) => setHandles(e.target.value)} onBlur=${() => handles !== (p.handles || '') && setPerson(p, { handles: handles.trim() || null }, 'Saved')}></textarea></div>
+    <div class="pflags">
+      <label title="Gets the 10am email and nudges"><input type="checkbox" checked=${!!p.onboarded || p.role === 'admin'} disabled=${busy || p.role === 'admin'} onChange=${() => setPerson(p, { onboarded: !p.onboarded }, p.onboarded ? `${first(p.name)} switched off` : `${first(p.name)} is on the app`)} /> On the app</label>
+      ${p.active !== false ? html`<button class="linkbtn" style="font-size:12.5px;text-align:left" disabled=${busy || (p.role === 'admin' && p.id === ctx.me.id && ctx.allPeople.filter((x) => x.role === 'admin' && x.active !== false).length < 2)}
+        onClick=${() => { const mk = p.role !== 'admin'; if (confirm(mk ? `Make ${p.name} an admin? Admins can see every task and manage people, departments and settings.` : `Remove admin rights from ${p.name}?`)) setPerson(p, { role: mk ? 'admin' : 'member', ...(mk ? { onboarded: true } : {}) }, mk ? `${first(p.name)} is now an admin` : 'Admin rights removed'); }}>${p.role === 'admin' ? 'Remove admin' : 'Make admin'}</button>` : null}
+      ${p.role !== 'admin' ? html`<label title="Inactive people can't sign in and drop out of pickers"><input type="checkbox" checked=${p.active !== false} disabled=${busy} onChange=${() => { if (p.active !== false && open && !confirm(`${first(p.name)} still owns ${open} open tasks. Deactivate anyway? Reassign them from All tasks first if needed.`)) return; setPerson(p, { active: p.active === false, onboarded: false }, p.active === false ? 'Reactivated' : 'Deactivated'); }} /> Active</label>` : null}
+    </div>
+  </div>`;
+}
+function AddPerson({ ctx, close }) {
+  const [f, setF] = useState({ name: '', email: '', dept: '', head: false, handles: '', onboarded: false });
+  const [err, setErr] = useState('');
+  const set = (k, v) => setF((x) => ({ ...x, [k]: v }));
+  async function save() {
+    const email = f.email.trim().toLowerCase();
+    if (!f.name.trim()) return setErr('Add a name.');
+    if (!/^[^@\s]+@burgersinghonline\.com$/.test(email)) return setErr('Use their @burgersinghonline.com email.');
+    const { data: p, error } = await sb.from('people').insert({ name: f.name.trim(), email, role: 'member', handles: f.handles.trim() || null, onboarded: f.onboarded }).select().single();
+    if (error) return setErr(error.code === '23505' ? 'Someone with that email already exists.' : error.message);
+    if (f.dept) await sb.from('department_members').insert({ person_id: p.id, department_id: f.dept, is_head: f.head });
+    ctx.setToast({ text: `${first(p.name)} added` }); ctx.load(); close();
+  }
+  return html`<div class="addperson">
+    <div class="grid2"><div><label class="lbl" for="np">Name</label><input id="np" class="field" value=${f.name} onInput=${(e) => set('name', e.target.value)} /></div>
+      <div><label class="lbl" for="ne">Work email</label><input id="ne" class="field" placeholder="name@burgersinghonline.com" value=${f.email} onInput=${(e) => set('email', e.target.value)} /></div></div>
+    <div class="grid2"><div><label class="lbl" for="nd">Department</label><select id="nd" class="field" value=${f.dept} onChange=${(e) => set('dept', e.target.value)}><option value="">Choose…</option>${ctx.depts.map((d) => html`<option value=${d.id}>${d.name}</option>`)}</select></div>
+      <div style="display:flex;gap:16px;align-items:flex-end;padding-bottom:8px"><label><input type="checkbox" checked=${f.head} onChange=${(e) => set('head', e.target.checked)} /> Head</label><label><input type="checkbox" checked=${f.onboarded} onChange=${(e) => set('onboarded', e.target.checked)} /> On the app now</label></div></div>
+    <div><label class="lbl" for="nh">What they handle</label><textarea id="nh" class="field" rows="2" placeholder="e.g. Store-level marketing for new stores" value=${f.handles} onInput=${(e) => set('handles', e.target.value)}></textarea></div>
+    ${err ? html`<p class="err">${err}</p>` : null}
+    <div class="actions"><button class="btn primary" onClick=${save}>Add person</button><button class="btn ghost" onClick=${close}>Cancel</button><span class="note">They can sign in with Google straight away. Add more departments from their row.</span></div>
+  </div>`;
+}
+function DeptAdmin({ ctx }) {
+  const [name, setName] = useState('');
+  const run = async (p, label) => { const r = await p; if (r?.error) { ctx.setToast({ text: r.error.message }); return false; } if (label) ctx.setToast({ text: label }); ctx.load(); return true; };
+  return html`<div class="pad" style="padding-top:22px">
+    <h2 style="font-size:15px;font-weight:600;margin:0 0 8px">Departments</h2>
+    <div class="dlist">${ctx.depts.map((d) => { const heads = ctx.members.filter((m) => m.department_id === d.id && m.is_head).map((m) => first(ctx.person(m.person_id)?.name)); const n = ctx.members.filter((m) => m.department_id === d.id).length; return html`<div class="drow">
+      <span class="ddot" style=${'background:' + ctx.deptColor(d.id)}></span><b>${d.name}</b><span class="note">${n} people${heads.length ? `, head ${heads.join(' and ')}` : ', no head'}</span><span style="flex:1"></span>
+      <button class="btn ghost" onClick=${() => { const v = (prompt('Rename department', d.name) || '').trim(); if (v && v !== d.name) run(sb.from('departments').update({ name: v }).eq('id', d.id), 'Renamed'); }}>Rename</button></div>`; })}</div>
+    <div style="display:flex;gap:8px;margin-top:10px;max-width:460px"><input class="field" style="flex:1" placeholder="New department name" value=${name} onInput=${(e) => setName(e.target.value)} />
+      <button class="btn" disabled=${!name.trim()} onClick=${async () => { if (await run(sb.from('departments').insert({ name: name.trim(), sort_order: ctx.depts.length + 1 }), 'Department added')) setName(''); }}>Add department</button></div>
+  </div>`;
+}
+
+/* ---------- email settings ---------- */
+function EmailSettings({ ctx }) {
+  const [st, setSt] = useState(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { sb.from('settings').select('key,value').then(({ data }) => { const m = Object.fromEntries((data || []).map((r) => [r.key, r.value])); setSt({ time: m.reminder_time || '10:00', days: m.working_days || [1, 2, 3, 4, 5], esc: m.escalation?.p1_head_after_days ?? 2 }); }); }, []);
+  if (!st) return html`<p class="empty">Loading…</p>`;
+  const DAYS = [[1, 'Mon'], [2, 'Tue'], [3, 'Wed'], [4, 'Thu'], [5, 'Fri'], [6, 'Sat'], [7, 'Sun']];
+  async function save() {
+    if (!st.days.length) return ctx.setToast({ text: 'Pick at least one day' });
+    setBusy(true);
+    const { error } = await sb.rpc('save_email_settings', { p_time: st.time, p_days: [...st.days].sort(), p_escalate: +st.esc });
+    setBusy(false);
+    ctx.setToast({ text: error ? error.message : 'Email settings saved' });
+  }
+  return html`<div class="page pad" style="padding-top:16px;max-width:640px;display:flex;flex-direction:column;gap:18px">
+    <div><label class="lbl" for="et">Daily email time (India time)</label><input id="et" type="time" class="field" style="width:160px" value=${st.time} onInput=${(e) => setSt({ ...st, time: e.target.value })} /></div>
+    <div><span class="lbl">Send on</span><div class="qchips">${DAYS.map(([n, l]) => html`<button class="qchip" aria-pressed=${st.days.includes(n)} onClick=${() => setSt({ ...st, days: st.days.includes(n) ? st.days.filter((x) => x !== n) : [...st.days, n] })}>${l}</button>`)}</div></div>
+    <div><label class="lbl" for="ee">Tell department heads when an urgent task is late by</label>
+      <div style="display:flex;align-items:center;gap:8px"><input id="ee" type="number" min="1" max="14" class="field" style="width:90px" value=${st.esc} onInput=${(e) => setSt({ ...st, esc: e.target.value })} /><span class="note">days</span></div></div>
+    <div class="actions"><button class="btn primary" disabled=${busy} onClick=${save}>${busy ? 'Saving…' : 'Save'}</button></div>
+    <p class="note">Emails go only to people switched on in People. Changes apply from the next send.</p>
+  </div>`;
+}
+
+/* ---------- activity log ---------- */
+function ActivityLog({ ctx }) {
+  const [rows, setRows] = useState(null);
+  const [who, setWho] = useState('');
+  const [kind, setKind] = useState('');
+  const [q, setQ] = useState('');
+  async function load() {
+    const [a, b] = await Promise.all([
+      sb.from('task_activity').select('id,task_id,actor_id,action,details,created_at').neq('action', 'digest_sent').order('created_at', { ascending: false }).limit(400),
+      sb.from('audit_log').select('*').order('created_at', { ascending: false }).limit(300),
+    ]);
+    const missing = [...new Set((a.data || []).map((x) => x.task_id).filter((id) => id && !ctx.tasks.some((t) => t.id === id)))];
+    const extra = missing.length ? (await sb.from('tasks').select('id,title').in('id', missing.slice(0, 300))).data || [] : [];
+    const title = (id) => ctx.tasks.find((t) => t.id === id)?.title || extra.find((t) => t.id === id)?.title || 'a task';
+    const t = (a.data || []).map((x) => ({ k: 'task', at: x.created_at, actor: x.actor_id, text: taskLine(ctx, x, title(x.task_id)), task: x.task_id }));
+    const ad = (b.data || []).map((x) => ({ k: 'admin', at: x.created_at, actor: x.actor_id, text: auditLine(ctx, x) })).filter((x) => x.text);
+    setRows([...t, ...ad].sort((p, r) => r.at.localeCompare(p.at)));
+  }
+  useEffect(() => { load(); }, []);
+  const shown = (rows || []).filter((r) => (!who || r.actor === who) && (!kind || r.k === kind) && (!q || r.text.toLowerCase().includes(q.toLowerCase())));
+  return html`
+    <div class="filterbar">
+      <label class="nlsearch">${I.search}<span class="sr">Search activity</span><input placeholder="Search activity" value=${q} onInput=${(e) => setQ(e.target.value)} /></label>
+      <label class="ctl">Who <select value=${who} onChange=${(e) => setWho(e.target.value)}><option value="">Everyone</option>${ctx.allPeople.map((p) => html`<option value=${p.id}>${p.name}</option>`)}</select></label>
+      <label class="ctl">Type <select value=${kind} onChange=${(e) => setKind(e.target.value)}><option value="">All</option><option value="task">Task changes</option><option value="admin">Admin changes</option></select></label>
+      <button class="addfilter" onClick=${load}>Refresh</button>
+    </div>
+    <div class="page">${rows === null ? html`<p class="empty">Loading…</p>` : !shown.length ? html`<p class="empty">Nothing found.</p>` : html`<div class="log">${shown.slice(0, 400).map((r) => html`<div class="logrow">
+      <span class="when">${new Date(r.at).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>
+      ${r.actor ? html`<${Avatar} ctx=${ctx} id=${r.actor} size=${20} />` : html`<span class="who-av" style="width:20px;height:20px;background:var(--chip)">✉</span>`}
+      <span class="what">${r.text}</span>
+      ${r.task ? html`<button class="linkbtn" style="font-size:12.5px" onClick=${() => ctx.setSheet({ mode: 'edit', id: r.task })}>Open</button>` : null}
+    </div>`)}</div>`}</div>`;
+}
+function taskLine(ctx, a, title) {
+  const who = ctx.person(a.actor_id)?.name || 'Email link';
+  const d = a.details || {};
+  const m = {
+    created: `${who} created “${title}”`, done: `${who} marked “${title}” done`, reopened: `${who} reopened “${title}”`,
+    blocked: `${who} marked “${title}” blocked${d.reason ? `: ${d.reason}` : ''}`, unblocked: `${who} unblocked “${title}”`,
+    on_hold: `${who} put “${title}” on hold`, resumed: `${who} resumed “${title}”`, cancelled: `${who} cancelled “${title}”`,
+    reassigned: `${who} reassigned “${title}” to ${ctx.person(d.to)?.name || 'someone'}`,
+    date_changed: `${who} moved “${title}”${d.from ? ` from ${fmtDate(d.from)}` : ''} to ${d.to ? fmtDate(d.to) : 'no date'}`,
+    edited: `${who} changed priority of “${title}”${d.priority_to ? ` to ${PRI[d.priority_to]}` : ''}`,
+    acknowledged: `${who} acknowledged “${title}”`, snoozed: `${who} snoozed “${title}”`,
+    nudged: `${who} nudged ${ctx.person(d.to)?.name || 'the owner'} on “${title}”`, asked_update: `${who} asked ${ctx.person(d.to)?.name || 'the owner'} for an update on “${title}”`,
+  };
+  return m[a.action] || `${who}: ${a.action} on “${title}”`;
+}
+function auditLine(ctx, x) {
+  const who = ctx.person(x.actor_id)?.name || 'System';
+  const n = x.details?.new || {}; const o = x.details?.old || {};
+  const pn = (id) => ctx.person(id)?.name || 'someone'; const dn = (id) => ctx.dept(id)?.name || 'a department';
+  if (x.entity === 'people') {
+    if (x.action === 'insert') return `${who} added ${n.name}`;
+    if (x.action === 'delete') return `${who} deleted ${o.name}`;
+    const ch = [];
+    if (n.role !== o.role) ch.push(n.role === 'admin' ? 'made admin' : 'admin rights removed');
+    if (n.onboarded !== o.onboarded) ch.push(n.onboarded ? 'switched on the app' : 'switched off the app');
+    if (n.active !== o.active) ch.push(n.active ? 'reactivated' : 'deactivated');
+    if (n.handles !== o.handles) ch.push('role description updated');
+    if (n.name !== o.name || n.email !== o.email) ch.push('name or email changed');
+    return ch.length ? `${who}: ${n.name} ${ch.join(', ')}` : null;
+  }
+  if (x.entity === 'department_members') {
+    if (x.action === 'insert') return `${who} added ${pn(n.person_id)} to ${dn(n.department_id)}${n.is_head ? ' as head' : ''}`;
+    if (x.action === 'delete') return `${who} removed ${pn(o.person_id)} from ${dn(o.department_id)}`;
+    if (n.is_head !== o.is_head) return `${who} ${n.is_head ? 'made' : 'removed'} ${pn(n.person_id)} ${n.is_head ? 'head of' : 'as head of'} ${dn(n.department_id)}`;
+    return null;
+  }
+  if (x.entity === 'departments') return x.action === 'insert' ? `${who} added department ${n.name}` : x.action === 'update' && n.name !== o.name ? `${who} renamed department ${o.name} to ${n.name}` : null;
+  if (x.entity === 'task_lists') {
+    if (x.action === 'insert') return `${who} created list ${n.name} in ${dn(n.department_id)}`;
+    if (x.action === 'delete') return `${who} deleted list ${o.name}`;
+    if (n.name !== o.name) return `${who} renamed list ${o.name} to ${n.name}`;
+    if (n.department_id !== o.department_id) return `${who} moved list ${n.name} to ${dn(n.department_id)}`;
+    return null;
+  }
+  if (x.entity === 'settings') return `${who} changed email settings (${n.key?.replace('_', ' ')})`;
+  return null;
 }
 /* ---------- task sheet: new task (explicit add) and task panel (autosave) ---------- */
 
