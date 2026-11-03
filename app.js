@@ -1986,6 +1986,7 @@ const AI_EXAMPLES = [
   'Add Harsh and Himalaya as collaborators on all Pre-Live tasks due this week',
   'Make all Offline Revenue tasks with “bulk order” in the title urgent and give them to Nikita',
   'Put all Critical Stores tasks on hold',
+  'Create user name.surname@burgersinghonline.com in Offline Revenue and add them as collaborator on all of Nikita’s tasks',
 ];
 function AiAdmin({ ctx }) {
   const [text, setText] = useState('');
@@ -2002,13 +2003,15 @@ function AiAdmin({ ctx }) {
     setSel(Object.fromEntries((r.ops || []).map((o, i) => [i, true])));
   }
   const T = (id) => ctx.tasks.find((t) => t.id === id);
+  const newP = plan?.new_people || [];
+  const nameOf = (id) => (String(id).startsWith('new:') ? `${newP.find((p) => 'new:' + p.email === id)?.name || id.slice(4)} (new)` : first(ctx.person(id)?.name));
   const PR = { P1: 'Urgent', P2: 'Normal', P3: 'Low' };
   const ST = { open: 'In progress', blocked: 'Blocked', on_hold: 'On hold', done: 'Done', cancelled: 'Cancelled' };
   function diffs(o) {
     const t = T(o.task_id); if (!t) return [];
     const out = [];
     const s = o.set || {};
-    if (s.owner_id && s.owner_id !== t.owner_id) out.push(['Owner', first(ctx.person(t.owner_id)?.name), first(ctx.person(s.owner_id)?.name)]);
+    if (s.owner_id && s.owner_id !== t.owner_id) out.push(['Owner', first(ctx.person(t.owner_id)?.name), nameOf(s.owner_id)]);
     if (s.due_date && s.due_date !== t.due_date) out.push(['Due', t.due_date ? fmtDate(t.due_date) : 'none', fmtDate(s.due_date)]);
     if (s.priority && s.priority !== t.priority) out.push(['Priority', PR[t.priority] || 'none', PR[s.priority]]);
     if (s.status && s.status !== t.status) out.push(['Status', ST[t.status], ST[s.status]]);
@@ -2017,17 +2020,51 @@ function AiAdmin({ ctx }) {
     const cur = t.collaborators || [];
     const add = (o.add || []).filter((id) => !cur.includes(id) && id !== (s.owner_id || t.owner_id));
     const rem = (o.remove || []).filter((id) => cur.includes(id));
-    if (add.length) out.push(['Collaborators', '', '+ ' + add.map((id) => first(ctx.person(id)?.name)).join(', ')]);
-    if (rem.length) out.push(['Collaborators', '', '− ' + rem.map((id) => first(ctx.person(id)?.name)).join(', ')]);
+    if (add.length) out.push(['Collaborators', '', '+ ' + add.map(nameOf).join(', ')]);
+    if (rem.length) out.push(['Collaborators', '', '− ' + rem.map(nameOf).join(', ')]);
     return out;
   }
   const rows = (plan?.ops || []).map((o, i) => ({ o, i, t: T(o.task_id), d: diffs(o) })).filter((r) => r.t && r.d.length);
   const chosen = rows.filter((r) => sel[r.i]);
+  const [pSel, setPSel] = useState({});
+  useEffect(() => { setPSel(Object.fromEntries([...(plan?.new_people || []).map((p) => ['n:' + p.email, true]), ...(plan?.people_updates || []).map((u, i) => ['u:' + i, true])])); }, [plan]);
+  const pUpdates = (plan?.people_updates || []).map((u, i) => {
+    const bits = [];
+    if (u.add_department) bits.push(`add to ${ctx.dept(u.add_department)?.name}`);
+    if (u.remove_department) bits.push(`remove from ${ctx.dept(u.remove_department)?.name}`);
+    if (u.head_of) bits.push(`make head of ${ctx.dept(u.head_of)?.name}`);
+    if (u.not_head_of) bits.push(`no longer head of ${ctx.dept(u.not_head_of)?.name}`);
+    if (u.handles) bits.push(`role: “${u.handles}”`);
+    if (u.onboarded === true) bits.push('switch on the app');
+    if (u.onboarded === false) bits.push('switch off the app');
+    return { u, i, text: bits.join(', ') };
+  }).filter((x) => x.text);
+  const nChosen = chosen.length + Object.values(pSel).filter(Boolean).length;
   async function apply() {
     setBusy(true);
+    let err = null;
+    const idMap = {};
+    for (const p of newP.filter((p) => pSel['n:' + p.email])) {
+      const { data: np, error } = await sb.from('people').insert({ name: p.name, email: p.email, role: 'member', handles: p.handles, onboarded: p.onboarded }).select().single();
+      if (error) { err = error; continue; }
+      idMap['new:' + p.email] = np.id;
+      if (p.department_id) await sb.from('department_members').insert({ person_id: np.id, department_id: p.department_id, is_head: p.head });
+    }
+    const R = (id) => (String(id).startsWith('new:') ? idMap[id] || null : id);
+    for (const { u, i } of pUpdates) {
+      if (!pSel['u:' + i]) continue;
+      const pid = R(u.person_id); if (!pid) continue;
+      if (u.add_department) await sb.from('department_members').upsert({ person_id: pid, department_id: u.add_department, is_head: false }, { onConflict: 'person_id,department_id', ignoreDuplicates: true });
+      if (u.remove_department) await sb.from('department_members').delete().eq('person_id', pid).eq('department_id', u.remove_department);
+      if (u.head_of) await sb.from('department_members').upsert({ person_id: pid, department_id: u.head_of, is_head: true }, { onConflict: 'person_id,department_id' });
+      if (u.not_head_of) await sb.from('department_members').update({ is_head: false }).eq('person_id', pid).eq('department_id', u.not_head_of);
+      const pf = {}; if (u.handles) pf.handles = u.handles; if (typeof u.onboarded === 'boolean') pf.onboarded = u.onboarded;
+      if (Object.keys(pf).length) { const { error } = await sb.from('people').update(pf).eq('id', pid); if (error) err = error; }
+    }
     const groups = {};
     for (const { o, t } of chosen) {
       const s = { ...(o.set || {}) };
+      if (s.owner_id) { s.owner_id = R(s.owner_id); if (!s.owner_id) delete s.owner_id; }
       if (s.task_list_id && !s.department_id) s.department_id = ctx.list(s.task_list_id)?.department_id;
       if (s.department_id && !s.task_list_id && s.department_id !== t.department_id) s.task_list_id = null;
       if (s.owner_id && s.owner_id !== t.owner_id) s.acknowledged_at = s.owner_id === ctx.me.id ? new Date().toISOString() : null;
@@ -2035,20 +2072,20 @@ function AiAdmin({ ctx }) {
       const key = JSON.stringify(s);
       if (Object.keys(s).length) (groups[key] ||= []).push(t.id);
     }
-    let err = null;
     for (const [k, ids] of Object.entries(groups)) { const { error } = await sb.from('tasks').update(JSON.parse(k)).in('id', ids); if (error) err = error; }
     const adds = []; const rems = [];
     for (const { o, t } of chosen) {
-      const owner = o.set?.owner_id || t.owner_id; const cur = t.collaborators || [];
-      (o.add || []).filter((id) => id !== owner && !cur.includes(id)).forEach((id) => adds.push({ task_id: t.id, person_id: id, added_by: ctx.me.id }));
-      (o.remove || []).filter((id) => cur.includes(id)).forEach((id) => rems.push([t.id, id]));
+      const owner = R(o.set?.owner_id) || t.owner_id; const cur = t.collaborators || [];
+      (o.add || []).map(R).filter((id) => id && id !== owner && !cur.includes(id)).forEach((id) => adds.push({ task_id: t.id, person_id: id, added_by: ctx.me.id }));
+      (o.remove || []).map(R).filter((id) => id && cur.includes(id)).forEach((id) => rems.push([t.id, id]));
     }
     if (adds.length) { const { error } = await sb.from('task_collaborators').upsert(adds, { onConflict: 'task_id,person_id', ignoreDuplicates: true }); if (error) err = error; }
     for (const [tid, pid] of rems) await sb.from('task_collaborators').delete().eq('task_id', tid).eq('person_id', pid);
     setBusy(false);
     if (err) return ctx.setToast({ text: err.message });
     setHistory((h) => [{ text, n: chosen.length, at: new Date() }, ...h].slice(0, 8));
-    ctx.setToast({ text: `${chosen.length} tasks updated` }); ctx.load(); setPlan(null); setText('');
+    const np = Object.keys(idMap).length;
+    ctx.setToast({ text: [np ? `${np} ${np === 1 ? 'person' : 'people'} added` : '', chosen.length ? `${chosen.length} tasks updated` : '', pUpdates.length ? 'access updated' : ''].filter(Boolean).join(', ') || 'Done' }); ctx.load(); setPlan(null); setText('');
   }
   return html`<div class="page pad" style="padding-top:16px;max-width:980px">
     <p class="note">Describe a change in plain words. You’ll see every task it affects, with before and after, and nothing changes until you apply. Private tasks are never sent to the AI.</p>
@@ -2061,6 +2098,13 @@ function AiAdmin({ ctx }) {
       ${plan.unclear ? html`<div class="banner"><span>?</span><span class="t">${plan.unclear}</span></div>` : null}
       ${plan.summary ? html`<p style="font-weight:500;margin:0 0 6px">${I.spark} ${plan.summary}</p>` : null}
       ${(plan.warnings || []).length ? html`<p class="note" style="color:var(--late)">${plan.warnings.join('. ')}</p>` : null}
+      ${newP.length || pUpdates.length ? html`<div class="aiplan" style="margin-bottom:12px">
+        ${newP.map((p) => html`<label class="aprow"><input type="checkbox" checked=${!!pSel['n:' + p.email]} onChange=${() => setPSel({ ...pSel, ['n:' + p.email]: !pSel['n:' + p.email] })} />
+          <span class="t"><b>New person: ${p.name}</b><span class="note">${p.email}</span></span>
+          <span class="d"><span class="dd"><span class="f">Department</span><b>${ctx.dept(p.department_id)?.name || 'none'}${p.head ? ' (head)' : ''}</b></span><span class="dd"><span class="f">On the app</span><b>${p.onboarded ? 'Yes' : 'No'}</b></span>${p.handles ? html`<span class="dd"><span class="f">Handles</span><b>${p.handles}</b></span>` : null}</span></label>`)}
+        ${pUpdates.map(({ u, i, text: tx }) => html`<label class="aprow"><input type="checkbox" checked=${!!pSel['u:' + i]} onChange=${() => setPSel({ ...pSel, ['u:' + i]: !pSel['u:' + i] })} />
+          <span class="t"><b>${nameOf(u.person_id)}</b><span class="note">Person</span></span><span class="d">${tx}</span></label>`)}
+      </div>` : null}
       ${rows.length ? html`
         <div class="filterbar" style="padding:6px 0;border:none"><span class="note">${rows.length} tasks would change</span>
           <button class="addfilter" onClick=${() => setSel(Object.fromEntries(rows.map((r) => [r.i, chosen.length !== rows.length])))}>${chosen.length === rows.length ? 'Untick all' : 'Tick all'}</button></div>
@@ -2069,8 +2113,9 @@ function AiAdmin({ ctx }) {
           <span class="t"><b>${t.title}</b><span class="note">${ctx.dept(t.department_id)?.name}${t.task_list_id ? ' / ' + ctx.list(t.task_list_id)?.name : ''}</span></span>
           <span class="d">${d.map(([f, a, b]) => html`<span class="dd"><span class="f">${f}</span>${a ? html`<s>${a}</s> → ` : null}<b>${b}</b></span>`)}</span>
         </label>`)}</div>
-        <div class="actions" style="margin-top:12px"><button class="btn primary big" disabled=${busy || !chosen.length} onClick=${apply}>${busy ? 'Applying…' : `Apply to ${chosen.length} tasks`}</button><button class="btn ghost big" onClick=${() => setPlan(null)}>Discard</button></div>`
-      : !plan.unclear ? html`<p class="note">No tasks matched, or nothing would change. Try naming the person, department, list or words in the titles.</p>` : null}
+`
+      : !plan.unclear && !newP.length && !pUpdates.length ? html`<p class="note">No tasks matched, or nothing would change. Try naming the person, department, list or words in the titles.</p>` : null}
+      ${nChosen ? html`<div class="actions" style="margin-top:12px"><button class="btn primary big" disabled=${busy} onClick=${apply}>${busy ? 'Applying…' : 'Apply ' + [newP.filter((p) => pSel['n:' + p.email]).length ? `${newP.filter((p) => pSel['n:' + p.email]).length} new ${newP.length === 1 ? 'person' : 'people'}` : '', chosen.length ? `${chosen.length} task changes` : ''].filter(Boolean).join(' and ')}</button><button class="btn ghost big" onClick=${() => setPlan(null)}>Discard</button></div>` : null}
     </div>` : null}
     ${history.length ? html`<div style="margin-top:24px"><span class="lbl">Applied this session</span>${history.map((h) => html`<div class="note">${h.at.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}: “${h.text}”, ${h.n} tasks</div>`)}<div class="note">Every change is in the Activity log.</div></div>` : null}
   </div>`;
