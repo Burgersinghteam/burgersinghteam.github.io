@@ -487,3 +487,6 @@ ul.brief.q li::marker { content: '? '; color: var(--faint); }
 .aprow .dd .f { color: var(--muted); margin-right: 6px; }
 .aprow .dd s { color: var(--faint); }
 @media (max-width: 760px) { .aprow { grid-template-columns: 22px 1fr; } .aprow .d { grid-column: 2; } }
+
+.applybar { position: sticky; bottom: 0; z-index: 5; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 12px; padding: 12px 0 calc(12px + env(safe-area-inset-bottom, 0px)); background: linear-gradient(to bottom, transparent, var(--surface) 30%); }
+@media (max-width: 760px) { .applybar { bottom: calc(58px + env(safe-area-inset-bottom, 0px)); } }

@@ -270,7 +270,7 @@ function App() {
         ${[isAdmin && ['overview', 'Overview'], ['mine', 'Mine'], ['dept', 'Teams'], ['all', 'All']].filter(Boolean).map(([id, l]) => html`<a class="mtab" href=${'#' + id} aria-current=${view === id ? 'page' : null}>${I[id === 'dept' ? 'dept' : id]}${l}</a>`)}
         <button class="mtab" onClick=${() => setPalette(true)}>${I.search}Search</button>
       </nav>
-      <${Composer} ctx=${ctx} deptHint=${view === 'dept' ? route.dept : null} listHint=${view === 'dept' ? route.list : null} />
+      ${view !== 'people' ? html`<${Composer} ctx=${ctx} deptHint=${view === 'dept' ? route.dept : null} listHint=${view === 'dept' ? route.list : null} />` : ''}
       ${sheet ? html`<${TaskSheet} ctx=${ctx} sheet=${sheet} close=${closeSheet} />` : ''}
       ${palette ? html`<${Palette} ctx=${ctx} close=${() => setPalette(false)} />` : ''}
       ${hint ? html`<${Hints} key=${hint.key} ctx=${ctx} hint=${hint} done=${() => setHint(null)} />` : ''}
@@ -2087,7 +2087,8 @@ function AiAdmin({ ctx }) {
     const np = Object.keys(idMap).length;
     ctx.setToast({ text: [np ? `${np} ${np === 1 ? 'person' : 'people'} added` : '', chosen.length ? `${chosen.length} tasks updated` : '', pUpdates.length ? 'access updated' : ''].filter(Boolean).join(', ') || 'Done' }); ctx.load(); setPlan(null); setText('');
   }
-  return html`<div class="page pad" style="padding-top:16px;max-width:980px">
+  const applyBar = nChosen ? html`<div class="applybar"><button class="btn primary big" disabled=${busy} onClick=${apply}>${busy ? 'Applying…' : 'Apply ' + [newP.filter((p) => pSel['n:' + p.email]).length ? `${newP.filter((p) => pSel['n:' + p.email]).length} new ${newP.length === 1 ? 'person' : 'people'}` : '', chosen.length ? `${chosen.length} task changes` : '', pUpdates.filter(({ i }) => pSel['u:' + i]).length ? 'access changes' : ''].filter(Boolean).join(', ')}</button><button class="btn ghost big" onClick=${() => setPlan(null)}>Discard</button><span class="note">Nothing changes until you apply.</span></div>` : null;
+  return html`<div class="page pad" style="padding-top:16px;padding-bottom:120px;max-width:980px">
     <p class="note">Describe a change in plain words. You’ll see every task it affects, with before and after, and nothing changes until you apply. Private tasks are never sent to the AI.</p>
     <textarea class="field" rows="3" style="width:100%;margin-top:8px;font-size:14.5px" placeholder="e.g. Move all of Vivek’s resale tasks to Soumay and make them due next Friday" value=${text}
       onInput=${(e) => setText(e.target.value)} onKeyDown=${(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) preview(); }}></textarea>
@@ -2115,7 +2116,7 @@ function AiAdmin({ ctx }) {
         </label>`)}</div>
 `
       : !plan.unclear && !newP.length && !pUpdates.length ? html`<p class="note">No tasks matched, or nothing would change. Try naming the person, department, list or words in the titles.</p>` : null}
-      ${nChosen ? html`<div class="actions" style="margin-top:12px"><button class="btn primary big" disabled=${busy} onClick=${apply}>${busy ? 'Applying…' : 'Apply ' + [newP.filter((p) => pSel['n:' + p.email]).length ? `${newP.filter((p) => pSel['n:' + p.email]).length} new ${newP.length === 1 ? 'person' : 'people'}` : '', chosen.length ? `${chosen.length} task changes` : ''].filter(Boolean).join(' and ')}</button><button class="btn ghost big" onClick=${() => setPlan(null)}>Discard</button></div>` : null}
+      ${applyBar}
     </div>` : null}
     ${history.length ? html`<div style="margin-top:24px"><span class="lbl">Applied this session</span>${history.map((h) => html`<div class="note">${h.at.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}: “${h.text}”, ${h.n} tasks</div>`)}<div class="note">Every change is in the Activity log.</div></div>` : null}
   </div>`;
