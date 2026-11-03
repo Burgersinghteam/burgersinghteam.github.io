@@ -490,3 +490,78 @@ ul.brief.q li::marker { content: '? '; color: var(--faint); }
 
 .applybar { position: sticky; bottom: 0; z-index: 5; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 12px; padding: 12px 0 calc(12px + env(safe-area-inset-bottom, 0px)); background: linear-gradient(to bottom, transparent, var(--surface) 30%); }
 @media (max-width: 760px) { .applybar { bottom: calc(58px + env(safe-area-inset-bottom, 0px)); } }
+
+/* mail follow-ups */
+.mpage { padding-top: 6px; }
+.mbanner { margin: 10px 28px 0; border-color: #F3D0C4; background: #FBEDE8; }
+.mgroups { display: flex; flex-direction: column; gap: 18px; padding-top: 10px; }
+.mgh { font-size: 13px; font-weight: 600; color: var(--muted); margin: 0; padding: 6px 28px; display: flex; gap: 8px; align-items: center; }
+.mgh .n, .msec h3 .n { font-weight: 500; color: var(--faint); }
+.mlist { display: flex; flex-direction: column; }
+.mrow { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; gap: 12px; align-items: start; padding: 12px 28px; border-bottom: 1px solid var(--line2); }
+.mrow:hover { background: var(--hover); }
+.mrow.closed { opacity: .8; }
+.mdays { font-size: 13px; font-weight: 600; color: var(--muted); background: var(--chip); border-radius: 8px; text-align: center; padding: 4px 0; font-variant-numeric: tabular-nums; }
+.mdays.warn { background: #FBEEDD; color: #8A4B1A; }
+.mdays.bad { background: var(--p1-bg); color: var(--p1-ink); }
+.mmain { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.mwho { font-size: 12.5px; font-weight: 600; color: var(--ink2); }
+.msubj { font-size: 14.5px; }
+.msubj a { color: var(--ink); text-decoration: none; }
+.msubj a:hover { text-decoration: underline; }
+.mwhy { font-size: 13px; color: var(--muted); }
+.mchips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 4px; }
+.mchip { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px; border-radius: 6px; font-size: 12px; background: var(--chip); color: var(--ink2); border: none; white-space: nowrap; }
+.mchip.plain { color: var(--muted); }
+.mchip.info { background: var(--info-bg); color: var(--link); }
+.mchip.warn { background: #FBEEDD; color: #8A4B1A; }
+.mchip.bad { background: var(--p1-bg); color: var(--p1-ink); }
+.mchip.auto { font-style: normal; opacity: .85; }
+.btnchip { cursor: pointer; }
+.btnchip:hover { filter: brightness(.96); }
+.macts summary { font-size: 12.5px; color: var(--link); cursor: pointer; }
+.macts ul { margin: 6px 0 0; padding-left: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.macts li { display: flex; gap: 8px; }
+.mdue { min-width: 58px; font-size: 12px; color: var(--muted); }
+.mdue.late { color: var(--p1-ink); font-weight: 600; }
+.mbtns { display: flex; gap: 6px; align-items: center; }
+.mbtns .btn { height: 30px; }
+.mtotask { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); }
+.mtotask .field { height: 32px; width: auto; }
+.mempty { margin: 28px; padding: 22px; border: 1px dashed var(--line); border-radius: 12px; color: var(--muted); max-width: 640px; }
+.mempty strong { color: var(--ink); display: block; margin-bottom: 4px; }
+.mempty p { margin: 0; font-size: 13.5px; }
+.mdigest { padding: 12px 28px; max-width: 1000px; display: flex; flex-direction: column; gap: 12px; }
+.mdhead { display: flex; align-items: baseline; gap: 12px; }
+.mdhead h2 { font-size: 18px; font-weight: 600; margin: 0; }
+.mheadline { margin: 0; font-size: 14.5px; color: var(--ink2); line-height: 1.5; }
+.mtiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.mtile { display: flex; flex-direction: column; gap: 2px; padding: 12px 14px; border-radius: 12px; background: var(--surface); border: 1px solid var(--line); text-decoration: none; color: var(--ink); border-left: 4px solid var(--k, var(--line)); }
+.mtile b { font-size: 22px; font-weight: 600; }
+.mtile span { font-size: 12.5px; color: var(--muted); }
+[data-k="bad"] { --k: #CF3339; } [data-k="warn"] { --k: #E09A2B; } [data-k="ok"] { --k: #2F9E6A; } [data-k="info"] { --k: #09A6E0; }
+.msec { border: 1px solid var(--line); border-left: 4px solid var(--k, var(--line)); border-radius: 12px; padding: 12px 16px; background: var(--surface); scroll-margin-top: 16px; }
+.msec h3 { font-size: 14.5px; font-weight: 600; margin: 0 0 6px; display: flex; gap: 8px; }
+.mdrow { padding: 8px 0; border-top: 1px solid var(--line2); }
+.msec h3 + .mdrow { border-top: none; }
+.mdtop { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; }
+.mgo { margin-left: auto; font-size: 12.5px; color: var(--link); text-decoration: none; }
+.mmore { font-size: 12.5px; color: var(--faint); padding: 6px 0 0; }
+.mnoise { border: 1px solid var(--line); border-radius: 12px; padding: 10px 16px; background: var(--bg); }
+.mnoise summary { cursor: pointer; font-size: 13.5px; color: var(--muted); }
+.mnrow { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 6px 0; border-top: 1px solid var(--line2); font-size: 13px; }
+.mnrow a { margin-left: auto; color: var(--link); text-decoration: none; font-size: 12.5px; }
+.mnoise > .msec { margin-top: 8px; }
+@media (prefers-color-scheme: dark) { .mdays.warn, .mchip.warn { background: #3A2A18; color: #E6B98F; } .mbanner { background: #3A1F1A; border-color: #5A2E24; } }
+@media (max-width: 760px) {
+  .mrow { grid-template-columns: 38px 1fr; padding: 12px 16px; }
+  .mbtns { grid-column: 2; flex-wrap: wrap; }
+  .mgh { padding: 6px 16px; } .mdigest { padding: 12px 16px; } .mbanner { margin: 10px 16px 0; }
+}
+
+.nlinks { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+.nlink { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: 8px; background: var(--chip); color: var(--ink); text-decoration: none; font-size: 13px; }
+.nlink.mail { background: var(--info-bg); color: var(--link); font-weight: 500; }
+.nlink:hover { filter: brightness(.96); }
+.mailchip { display: inline-grid; place-items: center; width: 26px; height: 26px; border-radius: 7px; color: var(--link); }
+.mailchip:hover { background: var(--info-bg); }

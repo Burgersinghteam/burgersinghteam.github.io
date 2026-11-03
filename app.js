@@ -176,6 +176,9 @@ const pinsKey = () => 'bs_pins';
 const loadPins = () => { try { return JSON.parse(localStorage.getItem(pinsKey()) || '[]'); } catch (_) { return []; } };
 const savePins = (p) => { try { localStorage.setItem(pinsKey(), JSON.stringify(p)); } catch (_) {} };
 
+
+const noteLinks = (s) => [...new Set(String(s || '').match(/https?:\/\/[^\s<>")]+/g) || [])];
+const isGmail = (u) => /^https:\/\/mail\.google\.com\//.test(u);
 /* ---------- app shell ---------- */
 function parseHash() {
   const h = decodeURIComponent(location.hash.slice(1));
@@ -265,12 +268,13 @@ function App() {
         ${view === 'dept' ? html`<${Dept} ctx=${ctx} route=${route} />` : ''}
         ${view === 'all' ? html`<${AllTasks} ctx=${ctx} route=${route} />` : ''}
         ${view === 'people' ? html`<${PeopleAdmin} ctx=${ctx} route=${route} />` : ''}
+        ${view === 'mail' ? html`<${MailView} ctx=${ctx} route=${route} />` : ''}
       </div>
       <nav class="mtabs" aria-label="Main">
         ${[isAdmin && ['overview', 'Overview'], ['mine', 'Mine'], ['dept', 'Teams'], ['all', 'All']].filter(Boolean).map(([id, l]) => html`<a class="mtab" href=${'#' + id} aria-current=${view === id ? 'page' : null}>${I[id === 'dept' ? 'dept' : id]}${l}</a>`)}
         <button class="mtab" onClick=${() => setPalette(true)}>${I.search}Search</button>
       </nav>
-      ${view !== 'people' ? html`<${Composer} ctx=${ctx} deptHint=${view === 'dept' ? route.dept : null} listHint=${view === 'dept' ? route.list : null} />` : ''}
+      ${view !== 'people' && view !== 'mail' ? html`<${Composer} ctx=${ctx} deptHint=${view === 'dept' ? route.dept : null} listHint=${view === 'dept' ? route.list : null} />` : ''}
       ${sheet ? html`<${TaskSheet} ctx=${ctx} sheet=${sheet} close=${closeSheet} />` : ''}
       ${palette ? html`<${Palette} ctx=${ctx} close=${() => setPalette(false)} />` : ''}
       ${hint ? html`<${Hints} key=${hint.key} ctx=${ctx} hint=${hint} done=${() => setHint(null)} />` : ''}
@@ -350,7 +354,29 @@ function makeCtx({ me, data, setData, load, setSheet, setToast, setPalette, pins
       else if (!t.acknowledged_at && t.owner_id !== t.created_by && t.due_date && diff(t.created_at.slice(0, 10), td) >= 1) out.push({ key: 'a' + t.id, kind: 'Not seen', t, title: t.title, who });
       else if (t.due_date && ['P1', 'P2'].includes(t.priority) && isQuiet(t)) out.push({ key: 'q' + t.id, kind: 'Quiet', t, title: t.title, who: `${who}, ${diff((t.last_update_at || t.created_at).slice(0, 10), td)}d` });
     }
+    const weekAgo = new Date(Date.now() - 7 * 86400e3).toISOString();
+    for (const t of tasks) {
+      if (t.status !== 'done' || t.closure_reviewed_at || t.owner_id === me.id || !t.completed_at || t.completed_at < weekAgo) continue;
+      const note = t.last_update_author === t.owner_id && t.last_update_body ? `, “${t.last_update_body.slice(0, 70)}${t.last_update_body.length > 70 ? '…' : ''}”` : ', no closing note';
+      out.push({ key: 'c' + t.id, kind: 'Closed', t, title: t.title, who: `${first(person(t.owner_id)?.name)} closed it ${ago(t.completed_at)}${note}` });
+    }
     return out;
+  }
+  async function reviewClosed(t) {
+    await update(t.id, { closure_reviewed_at: new Date().toISOString(), closure_reviewed_by: me.id }, null);
+    load();
+  }
+  async function reviewAllClosed(list) {
+    if (!list.length) return;
+    await sb.from('tasks').update({ closure_reviewed_at: new Date().toISOString(), closure_reviewed_by: me.id }).in('id', list.map((t) => t.id));
+    setToast({ text: `${list.length} closed tasks checked` }); load();
+  }
+  async function reopenWithNote(t) {
+    const note = (prompt(`What's still missing on “${t.title}”?`) || '').trim();
+    if (note === '' && !confirm('Reopen without a note?')) return;
+    await sb.from('task_updates').insert({ task_id: t.id, author_id: me.id, body: note ? `Reopened: ${note}` : 'Reopened: not finished yet.' });
+    await update(t.id, { status: 'open', completed_at: null }, `Reopened. ${first(person(t.owner_id)?.name)} has it again`);
+    load();
   }
   async function decideDate(req, approve) {
     const { error } = await sb.rpc('decide_date_change', { req: req.id, approve });
@@ -415,7 +441,7 @@ function makeCtx({ me, data, setData, load, setSheet, setToast, setPalette, pins
   const removePin = (name) => { const p = pins.filter((x) => x.name !== name); setPins(p); savePins(p); };
 
   return { me, data, people, allPeople, depts, members, lists, tasks, dcr, person, dept, list, deptColor, isAdmin, myDepts, headDepts, isHead, canSeeStats, canDecide, canRedate, canEdit, canOwner, canManageLists,
-    open, mine, ownerDept, update, save, done, reopen, hold, cancel, collabs, isCollab, addCollab, removeCollab, needsYou, decideDate, approveOther, decideRequest, nudge, readUpdate, createList, moveList, renameList, deleteList, moveTo, load, setToast, setSheet, setPalette,
+    open, mine, ownerDept, update, save, done, reopen, hold, cancel, collabs, isCollab, addCollab, removeCollab, needsYou, reviewClosed, reviewAllClosed, reopenWithNote, decideDate, approveOther, decideRequest, nudge, readUpdate, createList, moveList, renameList, deleteList, moveTo, load, setToast, setSheet, setPalette,
     openTask: (t) => setSheet({ mode: 'edit', id: t.id }),
     newTask: (p = {}) => { const ov = {}; if (p.department_id) ov.department_id = p.department_id; if (p.task_list_id) ov.task_list_id = p.task_list_id; if (p.owner_id) ov.owner_id = p.owner_id; document.dispatchEvent(new CustomEvent('bs-compose', { detail: { ov } })); }, pins, addPin, removePin };
 }
@@ -497,6 +523,7 @@ function Sidebar({ ctx, view, route }) {
     isAdmin && ['overview', 'Overview', ctx.needsYou().length],
     ['mine', 'My tasks', ctx.mine().filter(isActive).length],
     (isAdmin || ctx.headDepts.length) && ['all', 'All tasks', ctx.open().filter(isActive).length],
+    isMailOwner(ctx) && ['mail', 'Mail', ''],
     isAdmin && ['people', 'Admin', ''],
   ].filter(Boolean);
   return html`<nav class="side" aria-label="Main">
@@ -544,6 +571,7 @@ function Palette({ ctx, close }) {
       out.push({ k: 'Try', label: 'franchise sales due this week', run: () => setQ('franchise sales due this week') });
       out.push({ k: 'Try', label: 'no update offline revenue', run: () => setQ('no update offline revenue') });
       ctx.depts.slice(0, 6).forEach((d) => out.push({ k: 'Go to', label: d.name, run: () => { location.hash = 'dept?dept=' + d.id; } }));
+      if (isMailOwner(ctx)) out.push({ k: 'Go to', label: 'Mail follow-ups', run: () => { location.hash = 'mail'; } });
       if (ctx.isAdmin) { out.push({ k: 'Go to', label: 'Admin: AI assistant', run: () => { location.hash = 'people?tab=ai'; } }); out.push({ k: 'Go to', label: 'Admin: People', run: () => { location.hash = 'people?tab=people'; } }); out.push({ k: 'Go to', label: 'Admin: Activity log', run: () => { location.hash = 'people?tab=log'; } }); }
     }
     return out;
@@ -766,6 +794,7 @@ function TRow({ ctx, t, sel, toggle, selecting, showList = true, showDept = fals
       <button class=${'updc' + (t.last_update_at ? ' has' : '')} disabled=${!can} title=${t.last_update_body ? `Latest: ${t.last_update_body}. Click to update` : 'Post an update or change status'} aria-label=${'Update ' + t.title} onClick=${() => setQu(!qu)}>${I.bubble}<span class="lab">${t.last_update_at ? ago(t.last_update_at).replace(' ago', '') : 'Update'}</span></button>
       <${Prio} ctx=${ctx} t=${t} />
       <${DateChip} ctx=${ctx} t=${t} />
+      ${(() => { const g = noteLinks(t.notes).find(isGmail); return g ? html`<a class="mailchip" href=${g} target="_blank" rel="noopener noreferrer" title="Open the mail in Gmail" aria-label=${'Open the mail for ' + t.title}>${I.mail}</a>` : null; })()}
       <${CollabStack} ctx=${ctx} t=${t} />
       <${OwnerPick} ctx=${ctx} t=${t} />
     </div>
@@ -1152,6 +1181,7 @@ function NeedActions({ ctx, n }) {
   const openB = html`<button class="btn ghost" onClick=${() => ctx.openTask(t)}>Open</button>`;
   if (n.req) return html`<button class="btn primary" onClick=${() => ctx.decideDate(n.req, true)}>Approve</button><button class="btn ghost" onClick=${() => ctx.decideDate(n.req, false)}>Reject</button><${OtherDate} ctx=${ctx} req=${n.req} />`;
   if (n.request) return html`<button class="btn primary" onClick=${() => ctx.decideRequest(t, true)}>Accept</button><button class="btn ghost" onClick=${() => ctx.openTask(t)}>Reassign</button>`;
+  if (n.kind === 'Closed') return html`<button class="btn" onClick=${() => ctx.reviewClosed(t)}>Looks good</button><button class="btn ghost" style="color:var(--late)" onClick=${() => ctx.reopenWithNote(t)}>Reopen</button>`;
   if (n.kind === 'Urgent, late') return html`<${DateChip} ctx=${ctx} t=${t} /><button class="btn" onClick=${() => ctx.nudge(t, 'nudge')}>Nudge</button>`;
   if (n.kind === 'Blocked') return html`${t.blocked_on_person_id ? html`<button class="btn" onClick=${() => ctx.nudge(t, 'nudge', 'blocker')}>Nudge ${first(ctx.person(t.blocked_on_person_id)?.name)}</button>` : ''}${openB}`;
   if (n.kind === 'Quiet') return html`<button class="btn" onClick=${() => ctx.nudge(t, 'ask')}>Ask for update</button>${openB}`;
@@ -1202,7 +1232,7 @@ function Overview({ ctx }) {
     ${assign ? html`<${OwnerSuggest} ctx=${ctx} deptIds=${assign} close=${() => setAssign(false)} />` : ''}
     <div class="cols page">
       <div class="panel">
-        ${filter === 'needs' ? html`<div class="ph"><h2>Needs you</h2>${undated.length ? html`<a href="#all?status=nodate" class="linkbtn" style="font-size:13px">${undated.length} need priority and date</a>` : ''}</div>
+        ${filter === 'needs' ? html`<div class="ph"><h2>Needs you</h2>${(() => { const cl = ctx.needsYou().filter((n) => n.kind === 'Closed').map((n) => n.t); return cl.length > 2 ? html`<button class="linkbtn" style="font-size:13px" onClick=${() => ctx.reviewAllClosed(cl)}>Mark all ${cl.length} closed as checked</button>` : ''; })()}${undated.length ? html`<a href="#all?status=nodate" class="linkbtn" style="font-size:13px">${undated.length} need priority and date</a>` : ''}</div>
           ${needs.length ? needs.slice(0, 30).map((n) => html`<div class="need" key=${n.key}><span class="k">${n.kind}</span><span class="t"><span onClick=${() => ctx.openTask(n.t)}>${n.title}</span><span>${n.who}</span></span><span class="na"><${NeedActions} ctx=${ctx} n=${n} /></span></div>`) : html`<p class="empty">Nothing needs you right now.</p>`}`
         : html`<div class="ph"><h2>${figs.find((x) => x[0] === filter)[2]}</h2></div>${list.length ? list.slice(0, 60).map((t) => html`<${TRow} key=${t.id} ctx=${ctx} t=${t} showDept />`) : html`<p class="empty">None.</p>`}`}
       </div>
@@ -2121,6 +2151,248 @@ function AiAdmin({ ctx }) {
     ${history.length ? html`<div style="margin-top:24px"><span class="lbl">Applied this session</span>${history.map((h) => html`<div class="note">${h.at.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}: “${h.text}”, ${h.n} tasks</div>`)}<div class="note">Every change is in the Activity log.</div></div>` : null}
   </div>`;
 }
+/* ---------- Mail follow-ups (personal module, owner only) ---------- */
+I.mail = html`<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m4 7 8 6 8-6"/></svg>`;
+const MAIL_OWNER = 'venkat.bhargav@burgersinghonline.com';
+const isMailOwner = (ctx) => (ctx.me?.email || '').toLowerCase() === MAIL_OWNER;
+const GMAIL = (id) => 'https://mail.google.com/mail/u/0/#all/' + encodeURIComponent(id);
+const MSECTION = { kabir: 'Kabir / Vivek', decision: 'Needs your decision', risk: 'Risk', fyi: 'FYI' };
+const MSECTION_RANK = { kabir: 0, decision: 1, risk: 2, fyi: 3 };
+const DIGEST_ORDER = [['overdue', 0], ['due today', 0], ['kabir', 1], ['decision', 2], ['risk', 2], ['new', 3], ['waiting', 4], ['30 days', 5]];
+const DIGEST_KIND = [['overdue', 'bad'], ['kabir', 'info'], ['decision', 'warn'], ['risk', 'warn'], ['new', 'ok'], ['waiting', 'info'], ['30 days', 'warn']];
+const kw = (title, table, dflt) => { const t = String(title || '').toLowerCase(); for (const [k, v] of table) if (t.includes(k)) return v; return dflt; };
+
+function mailInfo(it) {
+  const td = today();
+  const waiting = it.last_date ? Math.max(0, diff(it.last_date, td)) : 0;
+  const toDl = it.deadline ? diff(td, it.deadline) : null;
+  const group = toDl !== null && toDl < 0 ? 'overdue' : toDl !== null && toDl <= 7 ? 'soon' : 'open';
+  return { waiting, toDl, group };
+}
+function sortMail(list) {
+  return list.sort((a, b) => {
+    const ia = mailInfo(a), ib = mailInfo(b);
+    if (ia.group !== 'open' && ia.group === ib.group) return ia.toDl - ib.toDl;
+    const ra = MSECTION_RANK[a.section] ?? 9, rb = MSECTION_RANK[b.section] ?? 9;
+    if (ra !== rb) return ra - rb;
+    return ib.waiting - ia.waiting;
+  });
+}
+
+function MailView({ ctx, route }) {
+  const [items, setItems] = useState(null);
+  const [complaints, setComplaints] = useState([]);
+  const [meta, setMeta] = useState({});
+  const [err, setErr] = useState('');
+  const [q, setQ] = useState('');
+  const [tab, setTabRaw] = useState(() => route?.tab || (() => { try { return localStorage.getItem('bs_mail_tab') || 'digest'; } catch (_) { return 'digest'; } })());
+  const setTab = (t) => { setTabRaw(t); try { localStorage.setItem('bs_mail_tab', t); } catch (_) {} };
+  const timer = useRef();
+  async function load() {
+    const [a, b, c] = await Promise.all([
+      sb.from('mail_items').select('*').limit(5000),
+      sb.from('mail_complaints').select('*').limit(2000),
+      sb.from('mail_meta').select('key,value'),
+    ]);
+    if (a.error) return setErr('Could not load mail follow-ups: ' + a.error.message);
+    setErr('');
+    setItems(a.data || []); setComplaints(b.data || []);
+    setMeta(Object.fromEntries((c.data || []).map((r) => [r.key, r.value])));
+  }
+  useEffect(() => {
+    if (!isMailOwner(ctx)) return;
+    load();
+    const soft = () => { clearTimeout(timer.current); timer.current = setTimeout(load, 600); };
+    const ch = sb.channel('mail-live')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'mail_items' }, soft)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'mail_complaints' }, soft)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'mail_meta' }, soft)
+      .subscribe();
+    return () => sb.removeChannel(ch);
+  }, []);
+  if (!isMailOwner(ctx)) return html`<div class="topbar"><h1>Not available</h1></div><p class="empty">This page isn’t available on your account.</p>`;
+
+  async function patch(it, fields, msg) {
+    setItems((xs) => xs.map((x) => (x.thread_id === it.thread_id ? { ...x, ...fields } : x)));
+    const { error } = await sb.from('mail_items').update(fields).eq('thread_id', it.thread_id);
+    if (error) { setErr('Could not save that change: ' + error.message); load(); return false; }
+    if (msg) ctx.setToast({ text: msg, undo: fields.status ? async () => { await sb.from('mail_items').update({ status: it.status, resolved_at: it.resolved_at }).eq('thread_id', it.thread_id); load(); } : null });
+    return true;
+  }
+  const all = items || [];
+  const open = all.filter((x) => x.status === 'open');
+  const onMe = open.filter((x) => x.direction !== 'them');
+  const follow = open.filter((x) => x.direction === 'them');
+  const closed = all.filter((x) => x.status !== 'open');
+  const openComplaints = complaints.filter((c) => c.status !== 'reviewed');
+  const lr = meta.lastRun;
+  const runLine = lr?.ranAt ? [`Last run ${new Date(lr.ranAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })} IST`, typeof lr.scanned === 'number' ? `${lr.scanned} threads checked` : '', typeof lr.ignored === 'number' ? `${lr.ignored} safe to ignore` : '', lr.note || ''].filter(Boolean).join(' · ') : 'Waiting for the first morning run';
+  const tabs = [['digest', 'Today’s digest', null], ['you', 'On me', onMe.length], ['them', 'To follow up', follow.length], ['complaints', 'Serious complaints', openComplaints.length], ['closed', 'Closed', closed.length]];
+  const match = (x) => !q || `${x.sender || ''} ${x.subject || ''} ${x.why || ''}`.toLowerCase().includes(q.toLowerCase());
+
+  return html`
+    <div class="topbar"><h1>Mail</h1><span class="sub">${runLine}</span></div>
+    <div class="filterbar">
+      <div class="tabs" role="tablist">${tabs.map(([k, l, n]) => html`<button role="tab" class="tab" aria-selected=${tab === k} onClick=${() => setTab(k)}>${l}${n !== null ? html`<span class="n">${n}</span>` : null}</button>`)}</div>
+      ${['you', 'them', 'closed'].includes(tab) ? html`<span style="flex:1"></span><label class="nlsearch" style="max-width:320px">${I.search}<span class="sr">Filter mail</span><input placeholder="Filter by sender, subject or why" value=${q} onInput=${(e) => setQ(e.target.value)} /></label>` : null}
+    </div>
+    ${err ? html`<div class="banner mbanner"><span class="t">${err}</span><button class="btn ghost" onClick=${() => { setErr(''); load(); }}>Retry</button></div>` : null}
+    <div class="page mpage">
+      ${items === null ? html`<p class="empty">Loading…</p>`
+        : tab === 'digest' ? html`<${MailDigest} digest=${meta.digest} auto=${meta.autoRead} />`
+        : tab === 'complaints' ? html`<${MailComplaints} ctx=${ctx} list=${complaints} setList=${setComplaints} setErr=${setErr} />`
+        : tab === 'closed' ? html`<${MailClosed} ctx=${ctx} list=${closed.filter(match)} patch=${patch} q=${q} />`
+        : html`<${MailList} ctx=${ctx} kind=${tab} list=${(tab === 'you' ? onMe : follow).filter(match)} patch=${patch} q=${q} reload=${load} />`}
+    </div>`;
+}
+
+function MailList({ ctx, kind, list, patch, q, reload }) {
+  if (!list.length) return html`<div class="mempty"><strong>${q ? 'No match' : kind === 'you' ? 'Nothing on you' : 'Nothing to follow up'}</strong><p>${q ? 'Nothing here matches that filter.' : kind === 'you' ? 'Threads where someone wrote last and you haven’t answered appear here, with days waiting and a deadline.' : 'Threads where your message was the last one and nobody has replied appear here, so you can chase them.'}</p></div>`;
+  const sorted = sortMail([...list]);
+  const groups = [['Overdue', sorted.filter((x) => mailInfo(x).group === 'overdue')], ['Due within 7 days', sorted.filter((x) => mailInfo(x).group === 'soon')], [kind === 'you' ? 'Open, longest waiting first' : 'No reply yet, longest first', sorted.filter((x) => mailInfo(x).group === 'open')]];
+  return html`<div class="mgroups">${groups.filter(([, xs]) => xs.length).map(([t, xs]) => html`<section>
+    <h2 class="mgh">${t}<span class="n">${xs.length}</span></h2>
+    <div class="mlist">${xs.map((it) => html`<${MailRow} key=${it.thread_id} ctx=${ctx} it=${it} patch=${patch} reload=${reload} />`)}</div>
+  </section>`)}</div>`;
+}
+
+function MailRow({ ctx, it, patch, reload }) {
+  const i = mailInfo(it);
+  const [pop, setPop] = useState(null);
+  const ref = useRef();
+  useEffect(() => { if (!pop) return; const f = (e) => { if (ref.current && !ref.current.contains(e.target)) setPop(null); }; document.addEventListener('mousedown', f); return () => document.removeEventListener('mousedown', f); }, [pop]);
+  const them = it.direction === 'them';
+  const task = it.task_id ? ctx.tasks.find((t) => t.id === it.task_id) : null;
+  const dlLabel = i.toDl === null ? 'No date' : i.toDl < 0 ? `Overdue ${-i.toDl}d (was ${fmtDate(it.deadline)})` : i.toDl === 0 ? (them ? 'Chase today' : 'Due today') : i.toDl <= 7 ? `${them ? 'Chase' : 'Due'} in ${i.toDl}d (${fmtDate(it.deadline)})` : `${them ? 'Chase by' : 'Due'} ${fmtDate(it.deadline)}`;
+  const dlCls = i.toDl === null ? '' : i.toDl < 0 ? ' bad' : i.toDl <= 7 ? ' warn' : '';
+  const setDate = (d) => { setPop(null); patch(it, { deadline: d, deadline_source: 'you' }, `Deadline set to ${fmtDate(d)}`); };
+  const td = today();
+  return html`<div class="mrow" ref=${ref}>
+    <div class=${'mdays' + (i.waiting >= 14 ? ' bad' : i.waiting >= 7 ? ' warn' : '')} title="Days since the last message">${i.waiting}d</div>
+    <div class="mmain">
+      <div class="mwho">${it.sender || 'Unknown sender'}</div>
+      <div class="msubj">${it.thread_id ? html`<a href=${GMAIL(it.thread_id)} target="_blank" rel="noopener noreferrer">${it.subject || '(no subject)'}</a>` : it.subject || '(no subject)'}</div>
+      ${it.why ? html`<div class="mwhy">${it.why}</div>` : null}
+      ${Array.isArray(it.actions) && it.actions.length ? html`<details class="macts"><summary>${it.actions.length} ${it.actions.length === 1 ? 'action names you' : 'actions name you'}</summary><ul>${it.actions.map((a) => html`<li><span class=${'mdue' + (a?.due && a.due < td ? ' late' : '')}>${a?.due ? fmtDate(a.due) : 'No date'}</span>${a?.text || ''}</li>`)}</ul></details>` : null}
+      <div class="mchips">
+        ${it.section && MSECTION[it.section] ? html`<span class=${'mchip' + (it.section === 'risk' ? ' bad' : it.section === 'kabir' ? ' info' : '')}>${MSECTION[it.section]}</span>` : null}
+        <span class="anchor"><button class=${'mchip btnchip' + dlCls + (it.deadline_source === 'auto' ? ' auto' : '')} title=${it.deadline_source === 'auto' ? 'Automatic date (no deadline in the mail). Click to change.' : it.deadline_source === 'you' ? 'Set by you. Click to change.' : 'From the mail. Click to change.'} onClick=${() => setPop(pop === 'date' ? null : 'date')}>${I.cal}${dlLabel}${it.deadline_source === 'auto' ? ' · auto' : ''}</button>
+          ${pop === 'date' ? html`<div class="pop" style="min-width:260px"><span class="note">${them ? 'Chase by' : 'Act by'}</span><div class="qchips">${[['Today', td], ['Tomorrow', addDays(td, 1)], ['Fri', parseQuick('fri')], ['Mon', nextDow(0)], ['+1 week', addDays(td, 7)]].map(([l, d]) => html`<button class="qchip" onClick=${() => setDate(d)}>${l}</button>`)}</div><input type="date" class="field" aria-label="Pick a date" onChange=${(e) => e.target.value && setDate(e.target.value)} /></div>` : null}</span>
+        ${it.deadline_note ? html`<span class="mchip plain" title="Deadline note">${it.deadline_note}</span>` : null}
+        ${i.waiting >= 30 ? html`<span class="mchip warn">Act or close</span>` : null}
+        ${it.followups ? html`<span class="mchip plain">Chased ${it.followups}×${it.last_followup_at ? `, last ${ago(it.last_followup_at)}` : ''}</span>` : null}
+        ${task ? html`<button class="mchip btnchip info" onClick=${() => ctx.openTask(task)}>Task: ${task.status === 'done' ? 'done' : shortDue(task.due_date)} ↗</button>` : null}
+      </div>
+    </div>
+    <div class="mbtns">
+      ${them ? html`<button class="btn primary" onClick=${() => patch(it, { followups: (it.followups || 0) + 1, last_followup_at: new Date().toISOString(), deadline: addDays(td, 3), deadline_source: 'you' }, 'Logged. Next chase in 3 days')}>Followed up</button>` : null}
+      ${!task ? html`<button class="btn" title="Create a task for you from this mail and close it here" onClick=${async () => {
+        const { data: t, error } = await mailTaskInsert(ctx, it, null);
+        if (error) return ctx.setToast({ text: error.message });
+        await sb.from('mail_items').update({ task_id: t.id, status: 'done', resolved_at: new Date().toISOString() }).eq('thread_id', it.thread_id);
+        ctx.load(); reload();
+        ctx.setToast({ text: `Moved to task: ${ctx.dept(t.department_id)?.name}${t.task_list_id ? ' / ' + ctx.list(t.task_list_id)?.name : ''}, due ${shortDue(t.due_date)}`, action: { label: 'Open', fn: () => ctx.setSheet({ mode: 'edit', id: t.id }) },
+          undo: async () => { await sb.from('tasks').delete().eq('id', t.id); await sb.from('mail_items').update({ task_id: null, status: 'open', resolved_at: null }).eq('thread_id', it.thread_id); ctx.load(); reload(); } });
+      }}>Move to task</button>` : null}
+      <button class=${'btn' + (them ? '' : ' primary')} onClick=${() => patch(it, { status: 'done', resolved_at: new Date().toISOString() }, 'Marked done')}>Done</button>
+      <button class="btn" onClick=${() => patch(it, { status: 'ignored', resolved_at: new Date().toISOString() }, 'Ignored')}>Ignore</button>
+      <span class="anchor"><button class="iconbtn" aria-label="More" onClick=${() => setPop(pop === 'more' ? null : 'more')}>⋯</button>
+        ${pop === 'more' ? html`<div class="pop" style="right:0;left:auto;min-width:220px">
+          <button class="opt" onClick=${() => { setPop(null); patch(it, { direction: them ? 'you' : 'them' }, them ? 'Moved to On me' : 'Moved to To follow up'); }}>${them ? 'Move to On me' : 'Move to To follow up'}</button>
+          ${it.thread_id ? html`<a class="opt" href=${GMAIL(it.thread_id)} target="_blank" rel="noopener noreferrer" style="text-decoration:none;color:inherit">Open in Gmail</a>` : null}
+        </div>` : null}</span>
+    </div>
+  </div>`;
+}
+
+async function mailTaskInsert(ctx, it, dept) {
+  const td = today();
+  const due = it.deadline && it.deadline >= td ? it.deadline : it.deadline ? td : addDays(td, 2);
+  const urgent = (it.deadline && it.deadline < td) || it.section === 'kabir';
+  const notes = [it.why, it.thread_id ? `Gmail: ${GMAIL(it.thread_id)}` : ''].filter(Boolean).join('\n\n');
+  const guess = suggestList(it.subject || '', ctx, dept || null, null);
+  const other = ctx.depts.find((d) => /other/i.test(d.name));
+  const department_id = dept || guess?.department_id || other?.id || ctx.depts[0]?.id;
+  const task_list_id = guess && guess.department_id === department_id ? guess.task_list_id : null;
+  return sb.from('tasks').insert({ title: (it.subject || 'Mail follow-up').slice(0, 300), notes, owner_id: ctx.me.id, created_by: ctx.me.id, department_id, task_list_id, due_date: due, priority: urgent ? 'P1' : 'P2', source: 'app', acknowledged_at: new Date().toISOString() }).select().single();
+}
+function MailClosed({ ctx, list, patch, q }) {
+  if (!list.length) return html`<div class="mempty"><strong>${q ? 'No match' : 'Nothing closed yet'}</strong><p>${q ? 'Nothing here matches that filter.' : 'Items you mark Done or Ignore move here. Reopen one if you change your mind.'}</p></div>`;
+  const xs = [...list].sort((a, b) => String(b.resolved_at || '').localeCompare(String(a.resolved_at || '')));
+  return html`<div class="mlist">${xs.map((it) => html`<div class="mrow closed" key=${it.thread_id}>
+    <div class="mdays">${it.status === 'done' ? '✓' : '–'}</div>
+    <div class="mmain"><div class="mwho">${it.sender || 'Unknown sender'}</div>
+      <div class="msubj">${it.thread_id ? html`<a href=${GMAIL(it.thread_id)} target="_blank" rel="noopener noreferrer">${it.subject || '(no subject)'}</a>` : it.subject}</div>
+      <div class="mchips"><span class="mchip plain">${it.task_id ? 'Moved to task' : it.status === 'done' ? 'Done' : 'Ignored'}${it.resolved_at ? ' ' + ago(it.resolved_at) : ''}</span>${it.task_id && ctx.tasks.find((t) => t.id === it.task_id) ? html`<button class="mchip btnchip info" onClick=${() => ctx.openTask(ctx.tasks.find((t) => t.id === it.task_id))}>Open task ↗</button>` : null}<span class="mchip plain">${it.direction === 'them' ? 'To follow up' : 'On me'}</span></div></div>
+    <div class="mbtns"><button class="btn" onClick=${() => patch(it, { status: 'open', resolved_at: null }, 'Reopened')}>Reopen</button></div>
+  </div>`)}</div>`;
+}
+
+function MailDigest({ digest, auto }) {
+  if (!digest || !Array.isArray(digest.sections) || !digest.sections.length) return html`<div class="mempty"><strong>No digest yet</strong><p>The morning run writes today’s digest here every weekday.</p></div>`;
+  const secs = digest.sections.filter((s) => s && Array.isArray(s.lines) && s.lines.length)
+    .map((s, idx) => ({ ...s, _o: kw(s.title, DIGEST_ORDER, 6), _i: idx })).sort((a, b) => a._o - b._o || a._i - b._i);
+  const slug = (t) => 'ds-' + String(t || '').toLowerCase().replace(/[^a-z0-9]+/g, '-');
+  const count = (s) => (typeof s.count === 'number' ? s.count : s.lines.filter((l) => !(typeof l === 'string' && /^\+\d+ more/.test(l))).length);
+  const when = digest.ranAt ? new Date(digest.ranAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', weekday: 'long', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }) + ' IST' : '';
+  return html`<div class="mdigest">
+    <div class="mdhead"><h2>Today’s digest</h2><span class="note">${when}</span></div>
+    ${digest.headline ? html`<p class="mheadline">${digest.headline}</p>` : null}
+    <div class="mtiles">${secs.map((s) => html`<a class="mtile" data-k=${kw(s.title, DIGEST_KIND, 'info')} href=${'#mail'} onClick=${(e) => { e.preventDefault(); document.getElementById(slug(s.title))?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}><b>${count(s)}</b><span>${s.title}</span></a>`)}</div>
+    ${secs.map((s) => html`<div class="msec" id=${slug(s.title)} data-k=${kw(s.title, DIGEST_KIND, 'info')}>
+      <h3>${s.title}<span class="n">${count(s)}</span></h3>
+      ${s.lines.map((l) => (typeof l === 'string' && /^\+\d+ more/.test(l) ? html`<div class="mmore">${l}</div>` : html`<${DigestLine} l=${l} />`))}
+    </div>`)}
+    ${auto && Array.isArray(auto.items) && auto.items.length ? html`<details class="mnoise"><summary>Cleared as noise: ${typeof auto.count === 'number' ? auto.count : auto.items.length} mails marked read</summary>
+      ${auto.items.map((x) => html`<div class="mnrow"><span class="mwho">${x.sender || ''}</span><span>${x.subject || ''}</span>${x.category ? html`<span class="mchip plain">${x.category}</span>` : null}${x.threadId ? html`<a href=${GMAIL(x.threadId)} target="_blank" rel="noopener noreferrer">Open in Gmail →</a>` : null}</div>`)}
+    </details>` : null}
+    <p class="note" style="margin-top:14px">Mark things Done, Ignore or Followed up on the On me and To follow up tabs.</p>
+  </div>`;
+}
+function DigestLine({ l }) {
+  if (typeof l === 'string') {
+    const m = l.match(/^(.*?)\s+[—–-]\s+(.*?)\s*\(([^)]*)\)\s*(?:[—–-]\s*(.*))?$/);
+    if (!m) return html`<div class="mdrow"><div class="msubj">${l}</div></div>`;
+    l = { sender: m[1], subject: m[2], meta: m[3], why: m[4] };
+  }
+  const days = typeof l.days === 'number' ? l.days : null;
+  return html`<div class="mdrow">
+    <div class="mdtop">${l.sender ? html`<span class="mwho">${l.sender}</span>` : null}${l.subject ? html`<span class="msubj">${l.subject}</span>` : null}</div>
+    <div class="mchips">
+      ${days !== null ? html`<span class=${'mchip' + (days >= 14 ? ' bad' : days >= 7 ? ' warn' : ' plain')}>${days} ${days === 1 ? 'day' : 'days'} waiting</span>` : null}
+      ${l.due ? html`<span class=${'mchip' + (l.overdue ? ' bad' : ' plain')}>Due ${l.due}</span>` : null}
+      ${l.meta ? String(l.meta).split(/;\s*/).filter(Boolean).map((x) => html`<span class=${'mchip' + (/overdue|past/i.test(x) ? ' bad' : ' plain')}>${x}</span>`) : null}
+      ${l.threadId ? html`<a class="mgo" href=${GMAIL(l.threadId)} target="_blank" rel="noopener noreferrer">Open in Gmail →</a>` : null}
+    </div>
+    ${l.why ? html`<div class="mwhy">${l.why}</div>` : null}
+  </div>`;
+}
+
+function MailComplaints({ ctx, list, setList, setErr }) {
+  const byDate = (a, b) => String(b.date || '').localeCompare(String(a.date || ''));
+  const open = list.filter((c) => c.status !== 'reviewed').sort(byDate);
+  const done = list.filter((c) => c.status === 'reviewed').sort(byDate);
+  async function toggle(c) {
+    const status = c.status === 'reviewed' ? 'open' : 'reviewed';
+    setList((xs) => xs.map((x) => (x.thread_id === c.thread_id ? { ...x, status } : x)));
+    const { error } = await sb.from('mail_complaints').update({ status }).eq('thread_id', c.thread_id);
+    if (error) setErr('Could not save that change: ' + error.message);
+    else ctx.setToast({ text: status === 'reviewed' ? 'Marked reviewed' : 'Reopened' });
+  }
+  const card = (c) => html`<div class="msec" data-k=${c.status === 'reviewed' ? 'ok' : 'bad'} key=${c.thread_id}>
+    <div class="mdtop"><span class="mwho">${c.sender || ''}</span>${c.kind ? html`<span class="mchip bad">${c.kind}</span>` : null}${c.date ? html`<span class="note">${fmtDate(c.date)}</span>` : null}</div>
+    <div class="msubj" style="margin:4px 0">${c.subject || ''}</div>
+    ${c.why ? html`<div class="mwhy">${c.why}</div>` : null}
+    <div class="mchips" style="margin-top:8px">${c.thread_id ? html`<a class="mgo" style="margin-left:0" href=${GMAIL(c.thread_id)} target="_blank" rel="noopener noreferrer">Open in Gmail →</a>` : null}<button class="btn" onClick=${() => toggle(c)}>${c.status === 'reviewed' ? 'Reopen' : 'Mark reviewed'}</button></div>
+  </div>`;
+  return html`<div class="mdigest">
+    <div class="mdhead"><h2>Serious complaints</h2><span class="note">${open.length} to review</span></div>
+    <p class="mheadline">All customer mail to the listen@ inbox is marked read each morning. Complaints about food safety, illness, foreign objects, legal or consumer action, media or a large refund are listed here instead.</p>
+    ${!list.length ? html`<div class="mempty"><strong>Nothing flagged yet</strong><p>Serious complaints appear here after the next morning run.</p></div>` : null}
+    ${open.map(card)}
+    ${done.length ? html`<details class="mnoise"><summary>Reviewed: ${done.length}</summary>${done.map(card)}</details>` : null}
+  </div>`;
+}
 /* ---------- task sheet: new task (explicit add) and task panel (autosave) ---------- */
 
 function TaskSheet({ ctx, sheet, close }) {
@@ -2244,7 +2516,7 @@ function TaskPanel({ ctx, id, close }) {
   }
   return html`<div class="scrim panelmode" onClick=${close}><div class="sheet" role="dialog" aria-label="Task details" onClick=${(e) => e.stopPropagation()}>
     <div class="top">
-      <span class="from">${ctx.dept(t.department_id)?.name}, added by ${first(ctx.person(t.created_by)?.name)} ${ago(t.created_at)} ${flash ? html`<span class="saved">Saved</span>` : ''}</span>
+      <span class="from">${ctx.dept(t.department_id)?.name}, added by ${first(ctx.person(t.created_by)?.name)} ${ago(t.created_at)} ${flash ? html`<span class="saved">Saved</span>` : ''}${(() => { const g = noteLinks(t.notes).find(isGmail); return g ? html` · <a href=${g} target="_blank" rel="noopener noreferrer" style="color:var(--link);text-decoration:none">Open the mail ↗</a>` : ''; })()}</span>
       <span style="display:flex;gap:2px;align-items:center">
         ${idx >= 0 ? html`<span class="note num" style="margin-right:4px">${idx + 1} of ${NAV.length}</span>
           <button class="iconbtn" aria-label="Previous task (K)" disabled=${idx <= 0} onClick=${() => go(-1)}>↑</button>
@@ -2290,7 +2562,9 @@ function TaskPanel({ ctx, id, close }) {
         <div><label class="lbl" for="dp">Department</label><select id="dp" class="field" disabled=${!(ctx.isAdmin || ctx.isHead(t.department_id))} value=${t.department_id} onChange=${(e) => save({ department_id: e.target.value, task_list_id: null })}>${ctx.depts.map((d) => html`<option value=${d.id}>${d.name}</option>`)}</select></div>
         <div><label class="lbl" for="tl">Task list</label><select id="tl" class="field" disabled=${!can} value=${t.task_list_id || ''} onChange=${async (e) => { let v = e.target.value; if (v === '__new') { v = await ctx.createList(t.department_id); if (!v) { e.target.value = t.task_list_id || ''; return; } } save({ task_list_id: v || null }); }}><option value="">None</option>${ctx.lists.filter((l) => l.department_id === t.department_id).map((l) => html`<option value=${l.id}>${l.name}</option>`)}${ctx.canManageLists(t.department_id) ? html`<option value="__new">+ New list…</option>` : ''}</select></div>
       </div>
-      <div><label class="lbl" for="nt">Notes</label><textarea id="nt" class="field" disabled=${!can} value=${notes} onInput=${(e) => setNotes(e.target.value)} onBlur=${() => notes !== (t.notes || '') && save({ notes: notes || null })}></textarea></div>
+      <div><label class="lbl" for="nt">Notes</label>
+        ${noteLinks(notes).length ? html`<div class="nlinks">${noteLinks(notes).map((u) => html`<a class=${'nlink' + (isGmail(u) ? ' mail' : '')} href=${u} target="_blank" rel="noopener noreferrer">${isGmail(u) ? html`${I.mail}Open the mail in Gmail` : html`↗ ${u.replace(/^https?:\/\//, '').slice(0, 50)}`}</a>`)}</div>` : null}
+        <textarea id="nt" class="field" disabled=${!can} value=${notes} onInput=${(e) => setNotes(e.target.value)} onBlur=${() => notes !== (t.notes || '') && save({ notes: notes || null })}></textarea></div>
       <label style="display:flex;gap:10px;align-items:center"><input type="checkbox" class="sel" style="margin:0" disabled=${!can} checked=${t.is_private} onChange=${(e) => save({ is_private: e.target.checked })} /> Private (only owner, creator and Bhargav)</label>
       ${err ? html`<p class="err" role="alert">${err}</p>` : ''}
       <p class="note">Changes save as you make them. J and K move to the next and previous task.</p>
