@@ -521,7 +521,7 @@ function Sidebar({ ctx, view, route }) {
   const myDepts = isAdmin ? ctx.depts : ctx.depts.filter((d) => ctx.myDepts.includes(d.id));
   const nav = [
     isAdmin && ['overview', 'Overview', ctx.needsYou().length],
-    ['mine', 'My tasks', ctx.(mine().filter(isActive).length + tasks.filter((t) => isActive(t) && t.owner_id !== me.id && (t.collaborators || []).includes(me.id)).length)],
+    ['mine', 'My tasks', ctx.mine().filter(isActive).length + ctx.tasks.filter((t) => isActive(t) && t.owner_id !== ctx.me.id && (t.collaborators || []).includes(ctx.me.id)).length],
     (isAdmin || ctx.headDepts.length) && ['all', 'All tasks', ctx.open().filter(isActive).length],
     isMailOwner(ctx) && ['mail', 'Mail', ''],
     isAdmin && ['people', 'Admin', ''],
