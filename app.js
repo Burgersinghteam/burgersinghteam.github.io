@@ -521,7 +521,7 @@ function Sidebar({ ctx, view, route }) {
   const myDepts = isAdmin ? ctx.depts : ctx.depts.filter((d) => ctx.myDepts.includes(d.id));
   const nav = [
     isAdmin && ['overview', 'Overview', ctx.needsYou().length],
-    ['mine', 'My tasks', ctx.mine().filter(isActive).length],
+    ['mine', 'My tasks', ctx.(mine().filter(isActive).length + tasks.filter((t) => isActive(t) && t.owner_id !== me.id && (t.collaborators || []).includes(me.id)).length)],
     (isAdmin || ctx.headDepts.length) && ['all', 'All tasks', ctx.open().filter(isActive).length],
     isMailOwner(ctx) && ['mail', 'Mail', ''],
     isAdmin && ['people', 'Admin', ''],
@@ -1191,7 +1191,7 @@ function Mine({ ctx }) {
   ].filter((g) => g.items.length).map((g) => ({ ...g, n: g.items.length }));
   setNav(groups.flatMap((g) => g.items));
   return html`
-    <div class="topbar"><h1>My tasks</h1><span class="sub num">${open.length} open, ${open.filter(isLate).length} late</span><span class="grow"></span><button class="btn primary" onClick=${() => ctx.newTask({ owner_id: ctx.me.id })}>${I.plus}New task</button></div>
+    <div class="topbar"><h1>My tasks</h1><span class="sub num">${open.length} open, ${open.filter(isLate).length} late${involved.length ? `, ${involved.length} as collaborator` : ''}</span><span class="grow"></span><button class="btn primary" onClick=${() => ctx.newTask({ owner_id: ctx.me.id })}>${I.plus}New task</button></div>
     <${WeekStrip} ctx=${ctx} tasks=${mine} day=${day} setDay=${setDay} />
     ${approvals.length ? html`<div style="padding:0 28px 12px"><div class="panel"><div class="ph"><h2>Needs your approval</h2></div>${approvals.map((r) => { const t = ctx.tasks.find((x) => x.id === r.task_id); return html`<div class="need"><span class="k">Date change</span><span class="t"><span onClick=${() => ctx.openTask(t)}>${t.title} → ${shortDue(r.proposed_due)}</span><span>${first(ctx.person(r.requested_by)?.name)}${r.reason ? ', ' + r.reason : ''}</span></span><span class="na"><button class="btn primary" onClick=${() => ctx.decideDate(r, true)}>Approve</button><button class="btn ghost" onClick=${() => ctx.decideDate(r, false)}>Reject</button></span></div>`; })}</div></div>` : ''}
     <div class="page">${groups.length ? html`<${Groups} ctx=${ctx} groups=${groups} storeKey="mine" rowProps=${{ showDept: true }} />` : html`<p class="empty">Nothing open${day ? ' that day' : ''}. Add a task below.</p>`}</div>`;
@@ -1868,9 +1868,10 @@ function PersonRow({ ctx, p, memberOf, setPerson, addDept, removeDept, toggleHea
   const [handles, setHandles] = useState(p.handles || '');
   useEffect(() => setHandles(p.handles || ''), [p.handles]);
   const open = ctx.tasks.filter((t) => t.owner_id === p.id && isActive(t)).length;
+  const involved = ctx.tasks.filter((t) => t.owner_id !== p.id && isActive(t) && (t.collaborators || []).includes(p.id)).length;
   const avail = ctx.depts.filter((d) => !memberOf.some((m) => m.department_id === d.id));
   return html`<div class=${'prow' + (p.active === false ? ' inactive' : '')}>
-    <div class="pwho"><${Avatar} ctx=${ctx} id=${p.id} size=${32} /><div><b>${p.name}</b>${p.role === 'admin' ? html` <span class="tag">Admin</span>` : null}<div class="note">${p.email}</div><div class="note">${open} open tasks${p.auth_user_id ? '' : ', not signed in yet'}</div></div></div>
+    <div class="pwho"><${Avatar} ctx=${ctx} id=${p.id} size=${32} /><div><b>${p.name}</b>${p.role === 'admin' ? html` <span class="tag">Admin</span>` : null}<div class="note">${p.email}</div><div class="note">${open} open tasks${involved ? `, ${involved} as collaborator` : ''}${p.auth_user_id ? '' : ', not signed in yet'}</div></div></div>
     <div class="pdepts">
       ${memberOf.map((m) => html`<span class=${'dchip' + (m.is_head ? ' head' : '')}><span class="ddot" style=${'background:' + ctx.deptColor(m.department_id)}></span>${ctx.dept(m.department_id)?.name}
         <button title=${m.is_head ? 'Head of department. Click to make a member' : 'Member. Click to make head'} aria-label=${(m.is_head ? 'Remove head role in ' : 'Make head of ') + ctx.dept(m.department_id)?.name} disabled=${busy} onClick=${() => toggleHead(p, m)}>${m.is_head ? '★ Head' : '☆'}</button>
