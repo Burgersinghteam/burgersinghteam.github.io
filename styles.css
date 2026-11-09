@@ -565,3 +565,12 @@ ul.brief.q li::marker { content: '? '; color: var(--faint); }
 .nlink:hover { filter: brightness(.96); }
 .mailchip { display: inline-grid; place-items: center; width: 26px; height: 26px; border-radius: 7px; color: var(--link); }
 .mailchip:hover { background: var(--info-bg); }
+
+.mrun { position: relative; font-size: 12.5px; color: var(--muted); }
+.mrun summary { cursor: pointer; color: var(--link); list-style: none; }
+.mrun[open] > div { position: absolute; z-index: 30; top: 22px; left: 0; width: min(640px, 80vw); max-height: 50vh; overflow: auto; padding: 12px 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); line-height: 1.5; }
+.tsec { padding: 12px 0 6px; }
+.tsec h3 { padding: 0 16px; display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px; }
+.tsec .mrow { padding-left: 16px; padding-right: 16px; }
+.tsec .mrow:last-child { border-bottom: none; }
+.tmore { margin: 6px 16px 4px; font-size: 13px; }

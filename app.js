@@ -2156,7 +2156,9 @@ I.mail = html`<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke
 const MAIL_OWNER = 'venkat.bhargav@burgersinghonline.com';
 const isMailOwner = (ctx) => (ctx.me?.email || '').toLowerCase() === MAIL_OWNER;
 const GMAIL = (id) => 'https://mail.google.com/mail/u/0/#all/' + encodeURIComponent(id);
-const MSECTION = { kabir: 'Kabir / Vivek', decision: 'Needs your decision', risk: 'Risk', fyi: 'FYI' };
+const MSECTION = { kabir: 'Priority sender', decision: 'Needs your decision', risk: 'Risk', fyi: 'FYI' };
+const VIP_RE = /(kabir|kj@tippingmrpink|pramod|samarth)/i;
+const vipName = (it) => { const m = String(it.sender || '').match(VIP_RE); if (!m) return null; const k = m[1].toLowerCase(); return k.startsWith('kabir') || k.startsWith('kj@') ? 'Kabir' : k === 'pramod' ? 'Pramod' : 'Samarth'; };
 const MSECTION_RANK = { kabir: 0, decision: 1, risk: 2, fyi: 3 };
 const DIGEST_ORDER = [['overdue', 0], ['due today', 0], ['kabir', 1], ['decision', 2], ['risk', 2], ['new', 3], ['waiting', 4], ['30 days', 5]];
 const DIGEST_KIND = [['overdue', 'bad'], ['kabir', 'info'], ['decision', 'warn'], ['risk', 'warn'], ['new', 'ok'], ['waiting', 'info'], ['30 days', 'warn']];
@@ -2173,7 +2175,7 @@ function sortMail(list) {
   return list.sort((a, b) => {
     const ia = mailInfo(a), ib = mailInfo(b);
     if (ia.group !== 'open' && ia.group === ib.group) return ia.toDl - ib.toDl;
-    const ra = MSECTION_RANK[a.section] ?? 9, rb = MSECTION_RANK[b.section] ?? 9;
+    const ra = vipName(a) ? -1 : MSECTION_RANK[a.section] ?? 9, rb = vipName(b) ? -1 : MSECTION_RANK[b.section] ?? 9;
     if (ra !== rb) return ra - rb;
     return ib.waiting - ia.waiting;
   });
@@ -2226,12 +2228,17 @@ function MailView({ ctx, route }) {
   const closed = all.filter((x) => x.status !== 'open');
   const openComplaints = complaints.filter((c) => c.status !== 'reviewed');
   const lr = meta.lastRun;
-  const runLine = lr?.ranAt ? [`Last run ${new Date(lr.ranAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })} IST`, typeof lr.scanned === 'number' ? `${lr.scanned} threads checked` : '', typeof lr.ignored === 'number' ? `${lr.ignored} safe to ignore` : '', lr.note || ''].filter(Boolean).join(' · ') : 'Waiting for the first morning run';
+  const ranAt = meta.digest?.ranAt || meta.autoRead?.ranAt || lr?.ranAt;
+  const fmtRun = (d) => new Date(d).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
+  const runLine = ranAt ? `Checked ${fmtRun(ranAt)} IST${typeof meta.autoRead?.count === 'number' ? ` · ${meta.autoRead.count} mails cleared as noise` : ''}` : 'Waiting for the first morning run';
+  const partial = lr?.note && /not fully|NOT advanced|CAPPED|NOT RUN/i.test(lr.note);
   const tabs = [['digest', 'Today’s digest', null], ['you', 'On me', onMe.length], ['them', 'To follow up', follow.length], ['complaints', 'Serious complaints', openComplaints.length], ['closed', 'Closed', closed.length]];
   const match = (x) => !q || `${x.sender || ''} ${x.subject || ''} ${x.why || ''}`.toLowerCase().includes(q.toLowerCase());
 
   return html`
-    <div class="topbar"><h1>Mail</h1><span class="sub">${runLine}</span></div>
+    <div class="topbar"><h1>Mail</h1><span class="sub">${runLine}</span>
+      ${partial ? html`<span class="mchip warn" title="The morning run hit search limits, so some mail from the last few days may not be in the list yet.">Scan incomplete</span>` : null}
+      ${lr?.note ? html`<details class="mrun"><summary>Run details</summary><div>${lr.note}</div></details>` : null}</div>
     <div class="filterbar">
       <div class="tabs" role="tablist">${tabs.map(([k, l, n]) => html`<button role="tab" class="tab" aria-selected=${tab === k} onClick=${() => setTab(k)}>${l}${n !== null ? html`<span class="n">${n}</span>` : null}</button>`)}</div>
       ${['you', 'them', 'closed'].includes(tab) ? html`<span style="flex:1"></span><label class="nlsearch" style="max-width:320px">${I.search}<span class="sr">Filter mail</span><input placeholder="Filter by sender, subject or why" value=${q} onInput=${(e) => setQ(e.target.value)} /></label>` : null}
@@ -2239,7 +2246,7 @@ function MailView({ ctx, route }) {
     ${err ? html`<div class="banner mbanner"><span class="t">${err}</span><button class="btn ghost" onClick=${() => { setErr(''); load(); }}>Retry</button></div>` : null}
     <div class="page mpage">
       ${items === null ? html`<p class="empty">Loading…</p>`
-        : tab === 'digest' ? html`<${MailDigest} digest=${meta.digest} auto=${meta.autoRead} />`
+        : tab === 'digest' ? html`<${MailToday} ctx=${ctx} items=${open} complaints=${openComplaints} auto=${meta.autoRead} patch=${patch} reload=${load} goTab=${setTab} />`
         : tab === 'complaints' ? html`<${MailComplaints} ctx=${ctx} list=${complaints} setList=${setComplaints} setErr=${setErr} />`
         : tab === 'closed' ? html`<${MailClosed} ctx=${ctx} list=${closed.filter(match)} patch=${patch} q=${q} />`
         : html`<${MailList} ctx=${ctx} kind=${tab} list=${(tab === 'you' ? onMe : follow).filter(match)} patch=${patch} q=${q} reload=${load} />`}
@@ -2275,7 +2282,8 @@ function MailRow({ ctx, it, patch, reload }) {
       ${it.why ? html`<div class="mwhy">${it.why}</div>` : null}
       ${Array.isArray(it.actions) && it.actions.length ? html`<details class="macts"><summary>${it.actions.length} ${it.actions.length === 1 ? 'action names you' : 'actions name you'}</summary><ul>${it.actions.map((a) => html`<li><span class=${'mdue' + (a?.due && a.due < td ? ' late' : '')}>${a?.due ? fmtDate(a.due) : 'No date'}</span>${a?.text || ''}</li>`)}</ul></details>` : null}
       <div class="mchips">
-        ${it.section && MSECTION[it.section] ? html`<span class=${'mchip' + (it.section === 'risk' ? ' bad' : it.section === 'kabir' ? ' info' : '')}>${MSECTION[it.section]}</span>` : null}
+        ${vipName(it) ? html`<span class="mchip info">${vipName(it)}</span>` : null}
+        ${it.section && it.section !== 'kabir' && MSECTION[it.section] ? html`<span class=${'mchip' + (it.section === 'risk' ? ' bad' : '')}>${MSECTION[it.section]}</span>` : null}
         <span class="anchor"><button class=${'mchip btnchip' + dlCls + (it.deadline_source === 'auto' ? ' auto' : '')} title=${it.deadline_source === 'auto' ? 'Automatic date (no deadline in the mail). Click to change.' : it.deadline_source === 'you' ? 'Set by you. Click to change.' : 'From the mail. Click to change.'} onClick=${() => setPop(pop === 'date' ? null : 'date')}>${I.cal}${dlLabel}${it.deadline_source === 'auto' ? ' · auto' : ''}</button>
           ${pop === 'date' ? html`<div class="pop" style="min-width:260px"><span class="note">${them ? 'Chase by' : 'Act by'}</span><div class="qchips">${[['Today', td], ['Tomorrow', addDays(td, 1)], ['Fri', parseQuick('fri')], ['Mon', nextDow(0)], ['+1 week', addDays(td, 7)]].map(([l, d]) => html`<button class="qchip" onClick=${() => setDate(d)}>${l}</button>`)}</div><input type="date" class="field" aria-label="Pick a date" onChange=${(e) => e.target.value && setDate(e.target.value)} /></div>` : null}</span>
         ${it.deadline_note ? html`<span class="mchip plain" title="Deadline note">${it.deadline_note}</span>` : null}
@@ -2298,7 +2306,7 @@ function MailRow({ ctx, it, patch, reload }) {
       <button class="btn" onClick=${() => patch(it, { status: 'ignored', resolved_at: new Date().toISOString() }, 'Ignored')}>Ignore</button>
       <span class="anchor"><button class="iconbtn" aria-label="More" onClick=${() => setPop(pop === 'more' ? null : 'more')}>⋯</button>
         ${pop === 'more' ? html`<div class="pop" style="right:0;left:auto;min-width:220px">
-          <button class="opt" onClick=${() => { setPop(null); patch(it, { direction: them ? 'you' : 'them' }, them ? 'Moved to On me' : 'Moved to To follow up'); }}>${them ? 'Move to On me' : 'Move to To follow up'}</button>
+          <button class="opt" onClick=${() => { setPop(null); patch(it, { direction: them ? 'you' : 'them', direction_set_at: new Date().toISOString() }, them ? 'Moved to On me' : 'Moved to To follow up'); }}>${them ? 'Move to On me' : 'Move to To follow up'}</button>
           ${it.thread_id ? html`<a class="opt" href=${GMAIL(it.thread_id)} target="_blank" rel="noopener noreferrer" style="text-decoration:none;color:inherit">Open in Gmail</a>` : null}
         </div>` : null}</span>
     </div>
@@ -2392,6 +2400,62 @@ function MailComplaints({ ctx, list, setList, setErr }) {
     ${open.map(card)}
     ${done.length ? html`<details class="mnoise"><summary>Reviewed: ${done.length}</summary>${done.map(card)}</details>` : null}
   </div>`;
+}
+
+/* ---------- Today: live digest built from the mail list ---------- */
+function MailToday({ ctx, items, complaints, auto, patch, reload, goTab }) {
+  const td = today();
+  const yday = addDays(td, -1);
+  const week = addDays(td, 7);
+  const onMe = items.filter((x) => x.direction !== 'them');
+  const them = items.filter((x) => x.direction === 'them');
+  const rank = (x) => (vipName(x) ? -1 : MSECTION_RANK[x.section] ?? 9);
+  const byImportance = (a, b) => rank(a) - rank(b) || String(b.last_date || '').localeCompare(String(a.last_date || ''));
+  const used = new Set();
+  const take = (list) => { const out = list.filter((x) => !used.has(x.thread_id)); out.forEach((x) => used.add(x.thread_id)); return out; };
+  const sections = [
+    { k: 'today', kind: 'bad', title: 'Due today', note: 'On you, deadline today', list: take(onMe.filter((x) => x.deadline === td).sort(byImportance)) },
+    { k: 'vip', kind: 'info', title: 'Kabir, Pramod & Samarth', note: 'Open items from them', list: take(onMe.filter((x) => vipName(x)).sort((a, b) => String(a.deadline || '').localeCompare(String(b.deadline || '')))) },
+    { k: 'new', kind: 'ok', title: 'New since yesterday', note: 'Arrived in the last run', list: take(onMe.filter((x) => (x.first_seen || '') >= yday).sort(byImportance)) },
+    { k: 'overdue', kind: 'bad', title: 'Overdue', note: 'Most recent first; old ones are often safe to Ignore', list: take(onMe.filter((x) => x.deadline && x.deadline < td).sort((a, b) => rank(a) - rank(b) || String(b.deadline).localeCompare(String(a.deadline)))) },
+    { k: 'week', kind: 'warn', title: 'Decisions and risks this week', note: 'Due in the next 7 days', list: take(onMe.filter((x) => ['decision', 'risk'].includes(x.section) && x.deadline && x.deadline <= week).sort((a, b) => String(a.deadline).localeCompare(String(b.deadline)))) },
+    { k: 'chase', kind: 'info', title: 'Chase today', note: 'Waiting on others, chase-by date reached', list: take(them.filter((x) => x.deadline && x.deadline <= td).sort((a, b) => String(a.deadline).localeCompare(String(b.deadline)))) },
+  ].filter((x) => x.list.length);
+  const later = onMe.length + them.length - used.size;
+  const due = sections.find((x) => x.k === 'today')?.list.length || 0;
+  const od = sections.find((x) => x.k === 'overdue')?.list.length || 0;
+  const nw = sections.find((x) => x.k === 'new')?.list.length || 0;
+  const head = [`${due} due today`, `${od} overdue`, nw ? `${nw} new` : null, `${them.length} waiting on others`, complaints.length ? `${complaints.length} serious complaints to review` : null].filter(Boolean).join(' · ');
+  return html`<div class="mdigest">
+    <p class="mheadline"><b>${onMe.length} on you</b> · ${head}</p>
+    <div class="mtiles">
+      ${sections.map((s) => html`<a class="mtile" data-k=${s.kind} href="#mail" onClick=${(e) => { e.preventDefault(); document.getElementById('mt-' + s.k)?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}><b>${s.list.length}</b><span>${s.title}</span></a>`)}
+      ${complaints.length ? html`<a class="mtile" data-k="bad" href="#mail" onClick=${(e) => { e.preventDefault(); goTab('complaints'); }}><b>${complaints.length}</b><span>Serious complaints</span></a>` : null}
+    </div>
+    ${sections.map((s) => html`<${TodaySection} key=${s.k} ctx=${ctx} s=${s} patch=${patch} reload=${reload} />`)}
+    ${!sections.length ? html`<div class="mempty"><strong>Nothing needs you today</strong><p>No mail is due, overdue or new. ${later ? `${later} open items have later deadlines in On me and To follow up.` : ''}</p></div>` : null}
+    ${later > 0 && sections.length ? html`<p class="note">${later} more open items have later deadlines. See <a href="#mail" onClick=${(e) => { e.preventDefault(); goTab('you'); }}>On me</a> and <a href="#mail" onClick=${(e) => { e.preventDefault(); goTab('them'); }}>To follow up</a>.</p>` : null}
+    ${auto && Array.isArray(auto.items) && auto.items.length ? html`<details class="mnoise"><summary>Cleared as noise this morning: ${typeof auto.count === 'number' ? auto.count : auto.items.length} mails marked read</summary>
+      ${auto.items.map((x) => html`<div class="mnrow"><span class="mwho">${x.sender || ''}</span><span>${x.subject || ''}</span>${x.category ? html`<span class="mchip plain">${x.category}</span>` : null}${x.threadId ? html`<a href=${GMAIL(x.threadId)} target="_blank" rel="noopener noreferrer">Open in Gmail →</a>` : null}</div>`)}
+    </details>` : null}
+  </div>`;
+}
+function TodaySection({ ctx, s, patch, reload }) {
+  const [all, setAll] = useState(false);
+  const shown = all ? s.list : s.list.slice(0, 5);
+  const closeAll = async () => {
+    if (!confirm(`Ignore all ${s.list.length} items in “${s.title}”? You can reopen any of them from Closed.`)) return;
+    const ids = s.list.map((x) => x.thread_id);
+    const { error } = await sb.from('mail_items').update({ status: 'ignored', resolved_at: new Date().toISOString() }).in('thread_id', ids);
+    ctx.setToast({ text: error ? error.message : `${ids.length} items ignored`, undo: error ? null : async () => { await sb.from('mail_items').update({ status: 'open' }).in('thread_id', ids); reload(); } });
+    reload();
+  };
+  return html`<section class="msec tsec" id=${'mt-' + s.k} data-k=${s.kind}>
+    <h3>${s.title}<span class="n">${s.list.length}</span><span class="note" style="font-weight:400;margin-left:6px">${s.note}</span>
+      ${s.k === 'overdue' && s.list.length > 5 ? html`<button class="linkbtn" style="margin-left:auto;font-size:12.5px" onClick=${closeAll}>Ignore all ${s.list.length}</button>` : null}</h3>
+    <div class="mlist">${shown.map((it) => html`<${MailRow} key=${it.thread_id} ctx=${ctx} it=${it} patch=${patch} reload=${reload} />`)}</div>
+    ${s.list.length > 5 ? html`<button class="linkbtn tmore" onClick=${() => setAll(!all)}>${all ? 'Show fewer' : `Show all ${s.list.length}`}</button>` : null}
+  </section>`;
 }
 /* ---------- task sheet: new task (explicit add) and task panel (autosave) ---------- */
 
