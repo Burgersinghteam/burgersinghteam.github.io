@@ -815,7 +815,32 @@ function GroupHead({ label, icon, n, pct, hint, collapsed, onToggle, onDrop, onA
     ${onAdd ? html`<button class="iconbtn" aria-label=${'Add a task to ' + label} onClick=${(e) => { e.stopPropagation(); onAdd(); }}>${I.plus}</button>` : ''}
   </div>`;
 }
-function Groups({ ctx, groups, sel, setSel, rowProps = {}, storeKey = 'x' }) {
+// keep rows where they are after an edit; new tasks slot into their natural place; "Re-sort" resets
+function useStableGroups(groups, storeKey) {
+  const snap = useRef({ key: null, place: new Map() });
+  const [, force] = useState(0);
+  const natural = groups;
+  const allIds = natural.flatMap((g) => g.items.map((t) => t.id));
+  const s = snap.current;
+  const overlap = allIds.length ? allIds.filter((id) => s.place.has(id)).length / allIds.length : 1;
+  if (s.key !== storeKey || overlap < 0.6) { s.key = storeKey; s.place = new Map(); }
+  if (!s.place.size) { natural.forEach((g) => g.items.forEach((t, i) => s.place.set(t.id, { g: g.key, i }))); return { groups: natural, moved: false, resort: () => {} }; }
+  const byId = new Map(natural.flatMap((g) => g.items.map((t) => [t.id, t])));
+  const keys = new Set(natural.map((g) => g.key));
+  let moved = false;
+  const out = natural.map((g) => {
+    const kept = [...byId.values()].filter((t) => { const p = s.place.get(t.id); return p && p.g === g.key && keys.has(p.g); }).sort((a, b) => s.place.get(a.id).i - s.place.get(b.id).i);
+    const fresh = g.items.filter((t) => { const p = s.place.get(t.id); return !p || !keys.has(p.g); });
+    const list = [...kept];
+    fresh.forEach((t) => { const ni = g.items.indexOf(t); list.splice(Math.min(ni, list.length), 0, t); });
+    if (!moved && list.some((t, i) => g.items[i]?.id !== t.id)) moved = true;
+    return { ...g, items: list };
+  });
+  out.forEach((g) => g.items.forEach((t, i) => s.place.set(t.id, { g: g.key, i })));
+  return { groups: out, moved, resort: () => { s.place = new Map(); force((x) => x + 1); } };
+}
+function Groups({ ctx, groups: naturalGroups, sel, setSel, rowProps = {}, storeKey = 'x' }) {
+  const { groups, moved, resort } = useStableGroups(naturalGroups, storeKey);
   const sk = 'bs_closed_' + storeKey;
   const [closed, setClosedRaw] = useState(() => { try { return JSON.parse(sessionStorage.getItem(sk) || '{}'); } catch (_) { return {}; } });
   useEffect(() => { try { setClosedRaw(JSON.parse(sessionStorage.getItem(sk) || '{}')); } catch (_) { setClosedRaw({}); } }, [sk]);
@@ -835,9 +860,10 @@ function Groups({ ctx, groups, sel, setSel, rowProps = {}, storeKey = 'x' }) {
     last.current = id;
   } : null;
   return html`<div class=${selecting ? 'selecting' : ''}>
-    ${labeled.length > 1 ? html`<div class="gtools"><span>${labeled.length} groups</span>
-      <button class="linkbtn" disabled=${nClosed === labeled.length} onClick=${() => setClosed(Object.fromEntries(labeled.map((g) => [g.key, true])))}>Collapse all</button>
-      <button class="linkbtn" disabled=${nClosed === 0} onClick=${() => setClosed({})}>Expand all</button></div>` : null}
+    ${labeled.length > 1 || moved ? html`<div class="gtools"><span>${labeled.length > 1 ? `${labeled.length} groups` : ''}</span>
+      ${moved ? html`<button class="linkbtn resort" title="Rows stay put while you edit. Click to put everything back in order." onClick=${resort}>↻ Re-sort</button>` : null}
+      ${labeled.length > 1 ? html`<button class="linkbtn" disabled=${nClosed === labeled.length} onClick=${() => setClosed(Object.fromEntries(labeled.map((g) => [g.key, true])))}>Collapse all</button>
+      <button class="linkbtn" disabled=${nClosed === 0} onClick=${() => setClosed({})}>Expand all</button>` : null}</div>` : null}
     ${groups.map((g) => { const ids = g.items.map((t) => t.id); const allSel = !!sel && ids.length > 0 && ids.every((x) => sel.includes(x)); return html`<div key=${g.key}>
     ${g.label != null ? html`<${GroupHead} ...${g} collapsed=${closed[g.key]} onToggle=${() => setClosed((c) => ({ ...c, [g.key]: !c[g.key] }))}
       allSel=${allSel} onSelAll=${setSel ? () => setSel((s) => (allSel ? s.filter((x) => !ids.includes(x)) : [...new Set([...s, ...ids])])) : null} />` : ''}

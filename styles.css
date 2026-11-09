@@ -574,3 +574,5 @@ ul.brief.q li::marker { content: '? '; color: var(--faint); }
 .tsec .mrow { padding-left: 16px; padding-right: 16px; }
 .tsec .mrow:last-child { border-bottom: none; }
 .tmore { margin: 6px 16px 4px; font-size: 13px; }
+
+.gtools .resort { color: var(--link); font-weight: 500; }
