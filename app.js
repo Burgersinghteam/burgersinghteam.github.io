@@ -1214,6 +1214,41 @@ function NeedActions({ ctx, n }) {
   if (n.kind === 'Not seen') return html`<button class="btn" onClick=${() => ctx.nudge(t, 'nudge')}>Nudge</button>${openB}`;
   return html`<${DateChip} ctx=${ctx} t=${t} />${openB}`;
 }
+/* ---------- Overview: full-width lists for Done / Due / Blocked ---------- */
+function OverviewList({ ctx, kind, list, title }) {
+  const td = today();
+  const dayLabel = (d) => (d === td ? 'Today' : d === addDays(td, 1) ? 'Tomorrow' : new Date(d).toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'short', timeZone: 'UTC' }));
+  const byDept = () => {
+    const m = new Map();
+    list.forEach((t) => { if (!m.has(t.department_id)) m.set(t.department_id, []); m.get(t.department_id).push(t); });
+    return [...m.entries()].sort((a, b) => b[1].length - a[1].length).map(([d, items]) => ({ key: 'd' + d, label: ctx.dept(d)?.name || 'Other', icon: html`<span class="ddot" style=${'background:' + ctx.deptColor(d)}></span>`, n: items.length, items }));
+  };
+  if (!list.length) return html`<div class="page pad"><p class="empty">${kind === 'done' ? 'Nothing closed yet this week.' : kind === 'due' ? 'Nothing due this week.' : 'Nothing is blocked.'}</p></div>`;
+  if (kind === 'done') {
+    const groups = byDept();
+    return html`<div class="page ovlist">
+      <p class="note pad">${list.length} tasks closed since Monday, newest first. Click a title to open it; Reopen sends it back to the owner.</p>
+      ${groups.map((g) => html`<section class="ovsec"><h3>${g.icon}${g.label}<span class="n">${g.n}</span></h3>
+        ${g.items.sort((a, b) => String(b.completed_at).localeCompare(String(a.completed_at))).map((t) => {
+          const note = t.last_update_author === t.owner_id && t.last_update_body ? t.last_update_body : null;
+          return html`<div class="donerow" key=${t.id}>
+            <span class="tick" aria-hidden="true">✓</span>
+            <div class="dmain"><button class="dtitle" onClick=${() => ctx.openTask(t)}>${t.title}</button>
+              <div class="dmeta">${first(ctx.person(t.owner_id)?.name) || 'Someone'} closed it ${new Date(t.completed_at).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })}${t.task_list_id ? ` · ${ctx.list(t.task_list_id)?.name}` : ''}${note ? html` · <span class="dnote">“${note.length > 140 ? note.slice(0, 140) + '…' : note}”</span>` : html` · <span class="muted">no closing note</span>`}</div></div>
+            ${ctx.canEdit(t) ? html`<button class="btn ghost" onClick=${() => ctx.reopenWithNote(t)}>Reopen</button>` : null}
+          </div>`; })}
+      </section>`)}
+    </div>`;
+  }
+  const groups = kind === 'due'
+    ? [...new Set(list.map((t) => t.due_date))].sort().map((d) => ({ key: 'day' + d, label: dayLabel(d), n: list.filter((t) => t.due_date === d).length, items: list.filter((t) => t.due_date === d).sort((a, b) => sortTasks(a, b, 'priority')) }))
+    : byDept();
+  return html`<div class="page ovlist wraprows">
+    <p class="note pad">${kind === 'due' ? `${list.length} open tasks due this week, by day.` : `${list.length} blocked tasks, by department. The tag shows who or what each one is waiting on.`}</p>
+    <${Groups} ctx=${ctx} groups=${groups} storeKey=${'ov-' + kind} rowProps=${{ showDept: kind === 'due' }} />
+  </div>`;
+}
+
 function Overview({ ctx }) {
   const [filter, setFilter] = useState('needs');
   const [assign, setAssign] = useState(false);
@@ -1256,7 +1291,8 @@ function Overview({ ctx }) {
     <div class="figs" role="tablist">${figs.map(([k, n, l]) => html`<button role="tab" aria-selected=${filter === k} class=${'fig' + (filter === k ? ' on' : '')} onClick=${() => setFilter(k)}><b>${n}</b><span>${l}</span></button>`)}</div>
     ${(() => { const mineOpen = open.filter((t) => t.owner_id === ctx.me.id && !t.is_private); const depts = [...new Set(mineOpen.map((t) => t.department_id))].filter((d) => ctx.members.some((m) => m.department_id === d && m.person_id !== ctx.me.id)); return html`<${AiTools} ctx=${ctx} onOwners=${mineOpen.length >= 5 && depts.length ? () => setAssign(depts) : null} />`; })()}
     ${assign ? html`<${OwnerSuggest} ctx=${ctx} deptIds=${assign} close=${() => setAssign(false)} />` : ''}
-    <div class="cols page">
+    ${filter !== 'needs' ? html`<${OverviewList} ctx=${ctx} kind=${filter} list=${list} title=${figs.find((x) => x[0] === filter)[2]} />` : null}
+    ${filter === 'needs' ? html`<div class="cols page">
       <div class="panel">
         ${filter === 'needs' ? html`<div class="ph"><h2>Needs you</h2>${(() => { const cl = ctx.needsYou().filter((n) => n.kind === 'Closed').map((n) => n.t); return cl.length > 2 ? html`<button class="linkbtn" style="font-size:13px" onClick=${() => ctx.reviewAllClosed(cl)}>Mark all ${cl.length} closed as checked</button>` : ''; })()}${undated.length ? html`<a href="#all?status=nodate" class="linkbtn" style="font-size:13px">${undated.length} need priority and date</a>` : ''}</div>
           ${needs.length ? needs.slice(0, 30).map((n) => html`<div class="need" key=${n.key}><span class="k">${n.kind}</span><span class="t"><span onClick=${() => ctx.openTask(n.t)}>${n.title}</span><span>${n.who}</span></span><span class="na"><${NeedActions} ctx=${ctx} n=${n} /></span></div>`) : html`<p class="empty">Nothing needs you right now.</p>`}`
@@ -1277,7 +1313,7 @@ function Overview({ ctx }) {
         ${since.last ? html`<div class="panel"><div class="ph"><h2>Since you last looked</h2><span class="note">${ago(new Date(since.last).toISOString())}</span></div>
           ${since.items.length ? since.items.map((t) => html`<div class="need" style="cursor:pointer" onClick=${() => ctx.openTask(t)}><span class="k">${new Date(t.updated_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</span><span class="t"><span>${t.title}</span><span>${t.status === 'done' ? 'Done' : t.status === 'blocked' ? 'Blocked' : 'Updated'}, ${first(ctx.person(t.owner_id)?.name)}</span></span></div>`) : html`<p class="empty">No changes.</p>`}</div>` : ''}
       </div>
-    </div>`;
+    </div>` : null}`;
 }
 
 /* ---------- AI helpers and features ---------- */
@@ -2346,7 +2382,7 @@ async function mailTaskInsert(ctx, it, dept) {
   const urgent = (it.deadline && it.deadline < td) || it.section === 'kabir';
   const notes = [it.why, it.thread_id ? `Gmail: ${GMAIL(it.thread_id)}` : ''].filter(Boolean).join('\n\n');
   const guess = suggestList(it.subject || '', ctx, dept || null, null);
-  const other = ctx.depts.find((d) => /other/i.test(d.name));
+  const other = ctx.depts.find((d) => /^central$/i.test(d.name)) || ctx.depts.find((d) => /other/i.test(d.name));
   const department_id = dept || guess?.department_id || other?.id || ctx.depts[0]?.id;
   const task_list_id = guess && guess.department_id === department_id ? guess.task_list_id : null;
   return sb.from('tasks').insert({ title: (it.subject || 'Mail follow-up').slice(0, 300), notes, owner_id: ctx.me.id, created_by: ctx.me.id, department_id, task_list_id, due_date: due, priority: urgent ? 'P1' : 'P2', source: 'app', acknowledged_at: new Date().toISOString() }).select().single();

@@ -229,7 +229,8 @@ textarea.field { height: auto; min-height: 70px; padding: 8px 10px; resize: vert
 .need:first-of-type { border-top: none; }
 .need .k { width: 92px; flex-shrink: 0; font-size: 12px; color: var(--muted); }
 .need .t { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.need .t span:first-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; font-weight: 450; }
+.need .t span:first-child { cursor: pointer; font-weight: 450; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; line-height: 1.4; }
+.need .t span:last-child { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .need .t span:last-child { font-size: 12px; color: var(--muted); }
 .need .na { display: flex; gap: 4px; align-items: center; flex-shrink: 0; }
 @media (max-width: 760px) { .need { flex-wrap: wrap; } .need .k { width: 100%; } }
@@ -576,3 +577,21 @@ ul.brief.q li::marker { content: '? '; color: var(--faint); }
 .tmore { margin: 6px 16px 4px; font-size: 13px; }
 
 .gtools .resort { color: var(--link); font-weight: 500; }
+
+/* overview full-width lists */
+.ovlist { padding-top: 4px; }
+.ovlist > .note { margin: 0 0 6px; }
+.ovsec { margin: 0 28px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); overflow: hidden; }
+.ovsec h3 { margin: 0; padding: 10px 16px; font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--line2); }
+.ovsec h3 .n { color: var(--faint); font-weight: 500; }
+.donerow { display: flex; align-items: flex-start; gap: 12px; padding: 10px 16px; border-top: 1px solid var(--line2); }
+.ovsec h3 + .donerow { border-top: none; }
+.donerow .tick { width: 20px; height: 20px; border-radius: 50%; background: var(--done); color: #fff; display: grid; place-items: center; font-size: 12px; flex-shrink: 0; margin-top: 2px; }
+.donerow .dmain { flex: 1; min-width: 0; }
+.donerow .dtitle { border: none; background: none; padding: 0; text-align: left; font: inherit; font-size: 14.5px; color: var(--ink); cursor: pointer; line-height: 1.4; }
+.donerow .dtitle:hover { text-decoration: underline; }
+.donerow .dmeta { font-size: 12.5px; color: var(--muted); margin-top: 2px; line-height: 1.45; }
+.donerow .dnote { color: var(--ink2); }
+.wraprows .ttitle { white-space: normal; overflow: visible; line-height: 1.4; }
+.wraprows .trow { align-items: flex-start; }
+@media (max-width: 760px) { .ovsec { margin: 0 12px 12px; } }
